@@ -140,7 +140,9 @@ class Cache:
         del self.cache[oldest_key]
 
 
-class NovelDataManager:
+class NovelDataManager: # This class name might be too specific if it's just a generic data manager.
+                        # For now, keeping as is per instructions.
+                        # The API design refers to it as NovelDataManager.
     """小说数据管理器"""
     
     def __init__(self, cache_enabled: bool = True):
@@ -151,276 +153,254 @@ class NovelDataManager:
             cache_enabled: 是否启用缓存
         """
         self.novel_data = {
-            "outline": None,
-            "chapters": {},
+            "title": "", # Added from API design expectation
+            "genre": "", # Added
+            "theme": "", # Added
+            "style": "", # Added
+            "synopsis": "", # Added
+            "volume_count": 0, # Added
+            "chapters_per_volume": 0, # Added
+            "words_per_chapter": 0, # Added
+            "new_character_count": 0, # Added
+            "selected_characters": [], # Added
+            "characters": [], # Added from API design (for new characters)
+            "worldbuilding": "", # Added
+            "outline": None, # This might be redundant if all info is top-level
+            "volumes": [], # Added from API design (structure for outline)
+            "chapters": {}, # This might be for actual chapter content, distinct from outline structure
             "metadata": {},
-            "relationships": {} # ✨ 人物关系就放这儿！
+            "relationships": {} 
         }
         self.cache_enabled = cache_enabled
         self.cache = Cache() if cache_enabled else None
         self.modified = False
-        self.current_file = None
+        self.current_file = None # Stores the path of the currently loaded .ainovel file
     
     def set_outline(self, outline: Dict[str, Any]) -> None:
         """
-        设置小说大纲
+        设置小说大纲 (and other top-level novel properties)
         
         Args:
-            outline: 大纲数据
+            outline: 大纲数据, which should conform to the structure in self.novel_data
         """
-        self.novel_data["outline"] = outline
-        self.mark_modified() # 使用新方法
+        # Update all relevant fields from the provided outline dictionary
+        for key in self.novel_data.keys():
+            if key in outline:
+                self.novel_data[key] = outline[key]
+        
+        # Ensure 'outline' key itself is also set if it's part of the input,
+        # though it might be better to integrate its content into volumes/characters etc.
+        if "outline" in outline: # If the input specifically has an 'outline' sub-dict
+             self.novel_data["outline"] = outline["outline"]
+        elif "volumes" in outline: # If volumes are provided, assume this is the main outline structure
+            self.novel_data["outline"] = {"volumes": outline.get("volumes", []), 
+                                          "characters": outline.get("characters", [])}
 
-        # 清除相关缓存
-        if self.cache_enabled:
-            self.cache.delete("outline")
+
+        self.mark_modified()
+
+        if self.cache_enabled and self.cache:
+            self.cache.delete("novel_data_full") # Cache the whole novel_data
     
     def get_outline(self) -> Optional[Dict[str, Any]]:
         """
-        获取小说大纲
+        获取小说大纲 (the entire novel_data structure)
         
         Returns:
-            大纲数据
+            The full novel data structure
         """
-        if not self.cache_enabled:
-            return self.novel_data["outline"]
+        if not self.cache_enabled or not self.cache:
+            return self.novel_data.copy() # Return a copy
         
-        # 尝试从缓存获取
-        outline = self.cache.get("outline")
-        if outline is None and self.novel_data["outline"] is not None:
-            outline = self.novel_data["outline"]
-            self.cache.set("outline", outline)
+        cached_data = self.cache.get("novel_data_full")
+        if cached_data is None and self.novel_data is not None: # novel_data should always exist
+            cached_data = self.novel_data.copy()
+            self.cache.set("novel_data_full", cached_data)
         
-        return outline
-    
-    def set_chapter(self, volume_index: int, chapter_index: int, content: str) -> None:
+        return cached_data
+
+    def set_chapter_content(self, volume_index: int, chapter_index: int, content: str) -> None:
         """
-        设置章节内容
+        设置独立存储的章节内容 (if not part of the main outline structure)
         
         Args:
             volume_index: 卷索引
             chapter_index: 章节索引
             content: 章节内容
         """
-        key = f"{volume_index}_{chapter_index}"
-        self.novel_data["chapters"][key] = content
-        self.mark_modified() # 使用新方法
+        key = f"content_{volume_index}_{chapter_index}"
+        self.novel_data["chapters"][key] = content # Storing actual content separately
+        self.mark_modified()
 
-        # 清除相关缓存
-        if self.cache_enabled:
-            self.cache.delete(f"chapter_{key}")
+        if self.cache_enabled and self.cache:
+            self.cache.delete(f"chapter_content_{key}")
     
-    def get_chapter(self, volume_index: int, chapter_index: int) -> Optional[str]:
+    def get_chapter_content(self, volume_index: int, chapter_index: int) -> Optional[str]:
         """
-        获取章节内容
-        
-        Args:
-            volume_index: 卷索引
-            chapter_index: 章节索引
-            
-        Returns:
-            章节内容
+        获取独立存储的章节内容
         """
-        key = f"{volume_index}_{chapter_index}"
+        key = f"content_{volume_index}_{chapter_index}"
         
-        if not self.cache_enabled:
+        if not self.cache_enabled or not self.cache:
             return self.novel_data["chapters"].get(key)
         
-        # 尝试从缓存获取
-        cache_key = f"chapter_{key}"
+        cache_key = f"chapter_content_{key}"
         content = self.cache.get(cache_key)
         if content is None:
             content = self.novel_data["chapters"].get(key)
-            if content is not None:
+            if content is not None and self.cache: # Check self.cache again
                 self.cache.set(cache_key, content)
         
         return content
     
     def set_metadata(self, key: str, value: Any) -> None:
-        """
-        设置元数据
-        
-        Args:
-            key: 元数据键
-            value: 元数据值
-        """
         self.novel_data["metadata"][key] = value
-        self.mark_modified() # 使用新方法
+        self.mark_modified()
     
     def get_metadata(self, key: str, default: Any = None) -> Any:
-        """
-        获取元数据
-        
-        Args:
-            key: 元数据键
-            default: 默认值
-            
-        Returns:
-            元数据值
-        """
         return self.novel_data["metadata"].get(key, default)
 
-    def set_relationships(self, relationships_data: Dict[Any, Any]) -> None: # 改为 Any, Any 兼容可能的键转换
-        """
-        设置人物关系数据
-
-        Args:
-            relationships_data: 人物关系字典
-        """
+    def set_relationships(self, relationships_data: Dict[Any, Any]) -> None:
         self.novel_data["relationships"] = relationships_data
-        self.mark_modified() # 标记已修改
+        self.mark_modified()
 
     def get_relationships(self) -> Dict[Any, Any]:
-        """
-        获取人物关系数据
-
-        Returns:
-            人物关系字典 (返回副本)
-        """
-        # 返回一个副本，防止外部直接修改内部数据
         return self.novel_data.get("relationships", {}).copy()
 
-    def save_to_file(self, filepath: str) -> bool:
+    # Renaming to match API design: save_novel_data, load_novel_data
+    def save_project(self, novel_data_to_save: Dict, filepath: str) -> bool: # Changed to save_project
         """
-        保存到文件
+        保存小说数据到 .ainovel 文件 (or other specified format)
         
         Args:
+            novel_data_to_save: The dictionary containing all novel data.
             filepath: 文件路径
             
         Returns:
             是否保存成功
         """
         try:
-            # 确保目录存在
-            os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+            # Ensure directory exists
+            abs_filepath = os.path.abspath(filepath)
+            os.makedirs(os.path.dirname(abs_filepath), exist_ok=True)
             
-            # 保存数据
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(self.novel_data, f, ensure_ascii=False, indent=2)
+            with open(abs_filepath, "w", encoding="utf-8") as f:
+                json.dump(novel_data_to_save, f, ensure_ascii=False, indent=2)
             
-            self.modified = False
-            self.current_file = filepath
+            # If this instance's data matches what was saved, reset modified flag
+            if novel_data_to_save is self.novel_data: # Check if it's the instance's own data
+                 self.modified = False
+                 self.current_file = abs_filepath
             return True
         except Exception as e:
-            print(f"保存文件出错: {e}")
+            print(f"保存文件 '{filepath}' 出错: {e}") # Log error
             return False
     
-    def load_from_file(self, filepath: str) -> bool:
+    def load_project(self, filepath: str) -> Optional[Dict]: # Changed to load_project
         """
-        从文件加载
+        从文件加载小说数据
         
         Args:
             filepath: 文件路径
             
         Returns:
-            是否加载成功
+            加载的小说数据字典，如果失败则返回 None
         """
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            abs_filepath = os.path.abspath(filepath)
+            with open(abs_filepath, "r", encoding="utf-8") as f:
+                loaded_data = json.load(f)
             
-            # 验证数据结构
-            if not isinstance(data, dict):
-                return False
+            if not isinstance(loaded_data, dict):
+                print(f"文件 '{filepath}' 格式错误: 不是一个字典。")
+                return None # Or raise error
             
-            if "outline" not in data:
-                return False
+            # Basic validation (can be more extensive)
+            # if "outline" not in loaded_data and "volumes" not in loaded_data : # Check for core components
+            #     print(f"文件 '{filepath}' 缺少必要的大纲或卷信息。")
+            #     return None
+
+            # Update internal state if this manager instance is loading into itself
+            # For library use, this method might just return the data.
+            # The API design implies it loads into the instance.
             
-            # 更新数据，确保所有预期的键都存在
-            self.novel_data = {
-                "outline": data.get("outline"),
-                "chapters": data.get("chapters", {}),
-                "metadata": data.get("metadata", {}),
-                "relationships": data.get("relationships", {}) # 加载人物关系，兼容旧文件
-            }
+            # Ensure all expected top-level keys are present in self.novel_data,
+            # filling with defaults from loaded_data or initial defaults.
+            current_keys = set(self.novel_data.keys())
+            for key in current_keys:
+                if key in loaded_data:
+                    self.novel_data[key] = loaded_data[key]
+                # else: it keeps its default from __init__
+            
+            # Add any extra keys from loaded_data not in initial self.novel_data structure
+            for key, value in loaded_data.items():
+                if key not in self.novel_data:
+                    self.novel_data[key] = value
+
             self.modified = False
-            self.current_file = filepath
+            self.current_file = abs_filepath
             
-            # 清除缓存
-            if self.cache_enabled:
+            if self.cache_enabled and self.cache:
                 self.cache.clear()
+                self.cache.set("novel_data_full", self.novel_data.copy()) # Cache the newly loaded data
             
-            return True
+            return self.novel_data.copy() # Return a copy of the loaded data
+        except FileNotFoundError:
+            print(f"加载文件出错: 文件未找到 '{filepath}'")
+            return None
+        except json.JSONDecodeError:
+            print(f"加载文件出错: JSON 解析错误 '{filepath}'")
+            return None
         except Exception as e:
-            print(f"加载文件出错: {e}")
-            return False
+            print(f"加载文件时发生未知错误 '{filepath}': {e}")
+            return None
     
     def is_modified(self) -> bool:
-        """
-        检查是否已修改
-        
-        Returns:
-            是否已修改
-        """
         return self.modified
 
     def mark_modified(self):
-        """标记数据已被修改"""
         self.modified = True
 
-    def clear(self) -> None:
-        """清空数据"""
-        self.novel_data = {
-            "outline": None,
-            "chapters": {},
-            "metadata": {},
-            "relationships": {} # 清空人物关系
+    def clear_data(self) -> None: # Renamed from clear to clear_data for clarity
+        """清空当前加载的小说数据"""
+        self.novel_data = { # Reset to initial structure
+            "title": "", "genre": "", "theme": "", "style": "", "synopsis": "",
+            "volume_count": 0, "chapters_per_volume": 0, "words_per_chapter": 0,
+            "new_character_count": 0, "selected_characters": [], "characters": [],
+            "worldbuilding": "", "outline": None, "volumes": [],
+            "chapters": {}, "metadata": {}, "relationships": {}
         }
         self.modified = False
         self.current_file = None
         
-        # 清除缓存
-        if self.cache_enabled:
+        if self.cache_enabled and self.cache:
             self.cache.clear()
     
-    def get_chapter_count(self) -> int:
-        """
-        获取章节总数
-        
-        Returns:
-            章节总数
-        """
-        return len(self.novel_data["chapters"])
-    
-    def get_all_chapter_keys(self) -> List[str]:
-        """
-        获取所有章节键
-        
-        Returns:
-            章节键列表
-        """
-        return list(self.novel_data["chapters"].keys())
-    
-    def get_chapter_size(self, volume_index: int, chapter_index: int) -> int:
-        """
-        获取章节大小（字符数）
-        
-        Args:
-            volume_index: 卷索引
-            chapter_index: 章节索引
-            
-        Returns:
-            章节大小
-        """
-        key = f"{volume_index}_{chapter_index}"
-        content = self.novel_data["chapters"].get(key)
-        return len(content) if content else 0
-    
-    def get_total_size(self) -> int:
-        """
-        获取总大小（字符数）
-        
-        Returns:
-            总大小
-        """
-        total = 0
-        
-        # 计算大纲大小
-        if self.novel_data["outline"]:
-            total += len(json.dumps(self.novel_data["outline"], ensure_ascii=False))
-        
-        # 计算章节大小
-        for content in self.novel_data["chapters"].values():
-            total += len(content)
-        
-        return total
+    # Utility methods like get_chapter_count, get_all_chapter_keys, etc.
+    # need to be re-evaluated based on the new self.novel_data structure.
+    # For example, chapter count might come from len(self.novel_data['volumes'][v_idx]['chapters']).
+
+    def get_chapter_summary(self, volume_index: int, chapter_index: int) -> Optional[str]:
+        """ Helper to get a chapter summary from the outline structure """
+        try:
+            return self.novel_data["volumes"][volume_index]["chapters"][chapter_index]["summary"]
+        except (IndexError, KeyError, TypeError):
+            return None
+
+    def get_total_word_count_estimate(self) -> int:
+        """ Estimates total word count based on outline structure """
+        count = 0
+        if "volumes" in self.novel_data:
+            for vol in self.novel_data.get("volumes", []):
+                for chap in vol.get("chapters", []):
+                    # This is a placeholder; actual word count would be from chapter content
+                    # For now, let's assume words_per_chapter is accurate if available
+                    if self.novel_data.get("words_per_chapter", 0) > 0:
+                        count += self.novel_data["words_per_chapter"]
+                    else: # Fallback: count words in summary if no explicit count
+                        summary = chap.get("summary", "")
+                        count += len(summary.split()) # Rough estimate
+        return count
+
+    # get_chapter_size and get_total_size are also affected by structure change.
+    # get_total_size might be more about the size of the JSON data itself.

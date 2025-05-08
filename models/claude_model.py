@@ -1,28 +1,60 @@
 import aiohttp
 import json
 import asyncio
-from models.ai_model import AIModel
+from .ai_model import AIModel
 
 class ClaudeModel(AIModel):
     """Anthropic Claude模型实现"""
 
-    def __init__(self, config_manager):
+    def __init__(self, config=None, config_manager=None): # Added config parameter
         """
         初始化Claude模型
 
         Args:
-            config_manager: 配置管理器实例
+            config (dict, optional): 特定于此模型实例的配置 (e.g., api_key, model_name).
+            config_manager (ConfigManager, optional): 全局配置管理器.
         """
-        super().__init__(config_manager)
-        self.api_key = config_manager.get_api_key('claude')
-        self.model_name = config_manager.get_model_name('claude')
-        self.api_url = "https://api.anthropic.com/v1/messages"
+        super().__init__(config_manager) # config_manager can be None if all config is in `config`
+        
+        # Prioritize instance-specific config, then config_manager, then defaults
+        if config and 'api_key' in config:
+            self.api_key = config['api_key']
+        elif config_manager:
+            self.api_key = config_manager.get_api_key('claude')
+        else:
+            self.api_key = None
+
+        if config and 'model_name' in config:
+            self.model_name = config['model_name']
+        elif config_manager:
+            self.model_name = config_manager.get_model_name('claude')
+        else:
+            self.model_name = None # Will be set to default if still None
+
+        # API URL can also be configurable
+        self.api_url = (config and config.get('base_url')) or \
+                       (config_manager and config_manager.get_config('CLAUDE', 'api_url', fallback=None)) or \
+                       "https://api.anthropic.com/v1/messages"
 
         if not self.api_key:
-            raise ValueError("Anthropic API密钥未配置")
+            # Try to get from config_manager again if not in instance_config
+            if config_manager and not (config and 'api_key' in config) : # if not provided by instance config
+                 self.api_key = config_manager.get_api_key('claude')
+
+            if not self.api_key: # if still not found
+                 raise ValueError("Anthropic API密钥未配置 (claude_api_key)")
+
 
         if not self.model_name:
-            self.model_name = "claude-3-opus-20240229"
+            # Try to get from config_manager again
+            if config_manager and not (config and 'model_name' in config):
+                self.model_name = config_manager.get_model_name('claude')
+            
+            if not self.model_name: # if still not found, use default
+                default_model = "claude-3-opus-20240229"
+                if config_manager:
+                    default_model = config_manager.get_config('CLAUDE', 'default_model_name', fallback=default_model)
+                self.model_name = default_model
 
     async def generate(self, prompt, callback=None):
         """

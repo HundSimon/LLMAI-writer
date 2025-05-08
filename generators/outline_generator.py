@@ -1,21 +1,77 @@
 import json
-from models.ai_model import AIModel
+from models.ai_model import AIModel # Changed import
+# We will also need PromptManager if it's used for creating prompts
+from utils.prompt_manager import PromptManager # Added import
+from utils.config_manager import ConfigManager # Added import, assuming it's needed directly
 
 class OutlineGenerator:
     """小说大纲生成器"""
 
-    def __init__(self, ai_model: AIModel, config_manager):
+    def __init__(self, ai_model: AIModel, prompt_manager: PromptManager, config_manager: ConfigManager): # Changed signature
         """
         初始化大纲生成器
 
         Args:
             ai_model: AI模型实例
+            prompt_manager: PromptManager实例
             config_manager: 配置管理器实例
         """
         self.ai_model = ai_model
+        self.prompt_manager = prompt_manager # Added
         self.config_manager = config_manager
 
-    async def generate_outline(self, title, genre, theme, style, synopsis, volume_count, chapters_per_volume, words_per_chapter, new_character_count, selected_characters=None, start_volume=None, start_chapter=None, end_volume=None, end_chapter=None, existing_outline=None, callback=None):
+    async def generate_outline(self, prompt_params: dict, existing_outline_data: Optional[dict] = None, callback=None): # Changed signature to match NovelGenerator call
+        """
+        生成小说大纲
+
+        Args:
+            prompt_params: 包含所有生成大纲所需参数的字典
+                           (title, genre, theme, style, synopsis, volume_count,
+                            chapters_per_volume, words_per_chapter, new_character_count,
+                            selected_characters, start_volume, start_chapter,
+                            end_volume, end_chapter, existing_outline)
+            existing_outline_data: 已有的大纲内容 (this might be part of prompt_params as 'existing_outline')
+            callback: 回调函数，用于接收流式生成的内容
+
+        Returns:
+            生成的大纲（JSON格式）
+        """
+        # Extract parameters from prompt_params
+        title = prompt_params.get("title")
+        genre = prompt_params.get("genre")
+        theme = prompt_params.get("theme")
+        style = prompt_params.get("style")
+        synopsis = prompt_params.get("synopsis")
+        volume_count = prompt_params.get("volume_count")
+        chapters_per_volume = prompt_params.get("chapters_per_volume")
+        words_per_chapter = prompt_params.get("words_per_chapter")
+        new_character_count = prompt_params.get("new_character_count")
+        selected_characters = prompt_params.get("selected_characters")
+        start_volume = prompt_params.get("start_volume")
+        start_chapter = prompt_params.get("start_chapter")
+        end_volume = prompt_params.get("end_volume")
+        end_chapter = prompt_params.get("end_chapter")
+        # existing_outline is passed separately in the original call, but also in prompt_params.
+        # Let's assume existing_outline_data is the one to use for merging logic,
+        # and prompt_params['existing_outline'] is for the prompt creation.
+        existing_outline_for_prompt = prompt_params.get("existing_outline")
+
+
+        # Use PromptManager to get the prompt string if templates are used.
+        # For now, assuming _create_outline_prompt is still used directly.
+        # If using PromptManager:
+        # prompt = self.prompt_manager.format_prompt(
+        #    "OutlineGenerationTemplateName", # Needs a template name
+        #     **prompt_params
+        # )
+        # if not prompt:
+        #    raise ValueError("Could not format outline generation prompt.")
+
+        prompt = self._create_outline_prompt(
+            title, genre, theme, style, synopsis, volume_count, chapters_per_volume,
+            words_per_chapter, new_character_count, selected_characters,
+            start_volume, start_chapter, end_volume, end_chapter, existing_outline_for_prompt
+        )
         """
         生成小说大纲
 
@@ -59,18 +115,22 @@ class OutlineGenerator:
         else:
             return generated_outline
 
-    async def optimize_outline(self, outline, callback=None):
+    async def optimize_outline(self, outline_data: Dict, callback=None) -> Dict: # Matched type hints from NovelGenerator
         """
         优化小说大纲
 
         Args:
-            outline: 初步大纲（JSON格式）
+            outline_data: 初步大纲（JSON格式）
             callback: 回调函数，用于接收流式生成的内容
 
         Returns:
             优化后的大纲（JSON格式）
         """
-        prompt = self._create_optimization_prompt(outline)
+        # If using PromptManager:
+        # prompt = self.prompt_manager.format_prompt("OutlineOptimizationTemplateName", outline_json=json.dumps(outline_data, ensure_ascii=False, indent=2))
+        # if not prompt:
+        #    raise ValueError("Could not format outline optimization prompt.")
+        prompt = self._create_optimization_prompt(outline_data)
 
         if callback:
             # 流式生成

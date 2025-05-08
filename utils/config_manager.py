@@ -2,65 +2,41 @@ import configparser
 import os
 
 class ConfigManager:
-    """配置管理器，负责读取和管理配置文件"""
+    """配置管理器，负责读取和管理配置"""
 
-    def __init__(self, config_path='config.ini'):
-        self.config_path = config_path
+    def __init__(self, config_source=None):
+        """
+        初始化配置管理器。
+
+        Args:
+            config_source: 配置的来源。
+                           可以是配置文件路径 (str)，或配置字典 (dict)。
+                           如果为 None，则使用空的配置。
+        """
         self.config = configparser.ConfigParser()
+        self.config_path = None # Only set if loaded from a file path
 
-        if os.path.exists(config_path):
-            self.config.read(config_path, encoding='utf-8')
+        if isinstance(config_source, str):
+            self.config_path = config_source
+            if os.path.exists(self.config_path):
+                self.config.read(self.config_path, encoding='utf-8')
+            else:
+                # Library should not create files, so if path not found, it's an empty config
+                # Or raise an error: raise FileNotFoundError(f"Config file not found: {self.config_path}")
+                # For now, treat as empty config.
+                pass
+        elif isinstance(config_source, dict):
+            # If a dictionary is provided, load it into the config parser
+            # configparser needs sections, so we assume the dict is structured appropriately
+            # e.g., {'SECTION_NAME': {'key': 'value'}}
+            self.config.read_dict(config_source)
+        elif config_source is None:
+            # Use an empty config, methods will return defaults or None
+            pass
         else:
-            self._create_default_config()
+            raise TypeError("config_source must be a file path (str), a dictionary, or None.")
 
-    def _create_default_config(self):
-        """创建默认配置文件"""
-        self.config['PROXY'] = {
-            'enabled': 'true',
-            'host': '127.0.0.1',
-            'port': '10808'
-        }
-
-        self.config['API_KEYS'] = {
-            'gpt_api_key': 'your_openai_api_key_here',
-            'claude_api_key': 'your_anthropic_api_key_here',
-            'gemini_api_key': 'your_google_api_key_here',
-            'custom_openai_api_key': 'your_custom_api_key_here',
-            'modelscope_api_key': 'your_modelscope_token_here'
-        }
-
-        self.config['MODELS'] = {
-            'gpt_model': 'gpt-4-turbo',
-            'claude_model': 'claude-3-opus-20240229',
-            'gemini_model': 'gemini-2.0-flash',
-            'custom_openai_model': 'your_custom_model_name_here',
-            'modelscope_model': 'deepseek-ai/DeepSeek-R1',
-            'ollama_model': 'llama3.2'
-        }
-
-        self.config['CUSTOM_OPENAI'] = {
-            # 不需要enabled设置，始终启用
-            'api_url': 'https://your-custom-api-endpoint.com/v1/chat/completions'
-        }
-
-        # 添加自定义OpenAI模型配置部分
-        self.config['CUSTOM_OPENAI_MODELS'] = {
-            # 不需要enabled设置，始终启用
-            'models': '[]'  # 使用JSON字符串存储模型列表
-        }
-
-        self.config['MODELSCOPE'] = {
-            # 不需要enabled设置，始终启用
-            'base_url': 'https://api-inference.modelscope.cn/v1/'
-        }
-
-        self.config['OLLAMA'] = {
-            # 不需要enabled设置，始终启用
-            'api_url': 'http://localhost:11434/api/chat'
-        }
-
-        with open(self.config_path, 'w', encoding='utf-8') as f:
-            self.config.write(f)
+    # _create_default_config is removed as the library should not create default files.
 
     def get_proxy_settings(self):
         """获取代理设置"""
@@ -97,19 +73,21 @@ class ConfigManager:
         model_name = f'{model_type}_model'
         return self.config['MODELS'].get(model_name, None)
 
-    def get_config(self, section, key, default=None):
+    def get_config(self, section, key, fallback=None): # Changed default to fallback to match configparser
         """获取指定配置项"""
-        if section not in self.config:
-            return default
-
-        return self.config[section].get(key, default)
+        # getboolean, getint, getfloat can be used for typed retrieval
+        return self.config.get(section, key, fallback=fallback)
 
     def set_config(self, section, key, value):
-        """设置指定配置项"""
-        if section not in self.config:
-            self.config[section] = {}
+        """设置指定配置项 (in-memory only for library use)"""
+        if not self.config.has_section(section):
+            self.config.add_section(section)
+        self.config.set(section, key, str(value))
 
-        self.config[section][key] = str(value)
+    # GUI-specific or file-writing methods like is_custom_openai_enabled,
+    # add_custom_openai_model, update_custom_openai_model, delete_custom_openai_model,
+    # and save_config are removed or will be significantly re-evaluated for a library context.
+    # For now, removing those that directly write to files or imply GUI interaction.
 
     def is_custom_openai_enabled(self):
         """检查自定义OpenAI API是否启用"""
@@ -175,71 +153,46 @@ class ConfigManager:
         self.config['CUSTOM_OPENAI_MODELS']['models'] = json.dumps(models, ensure_ascii=False)
         self.config['CUSTOM_OPENAI_MODELS']['enabled'] = 'true'
 
-        # 保存配置
-        self.save_config()
+        # This method might not be relevant for a library if it doesn't manage saving.
+        # self.save_config() # Removed
         return True
 
     def update_custom_openai_model(self, model_name, model_config):
-        """更新一个自定义OpenAI模型配置
-
-        Args:
-            model_name: 要更新的模型名称
-            model_config: 新的模型配置
-
-        Returns:
-            成功返回 True，失败返回 False
-        """
+        """更新一个自定义OpenAI模型配置 (in-memory)"""
         if 'CUSTOM_OPENAI_MODELS' not in self.config:
-            return False
+            # Or self.config.add_section('CUSTOM_OPENAI_MODELS')
+            # self.config.set('CUSTOM_OPENAI_MODELS', 'models', '[]')
+            return False # Cannot update if section doesn't exist
 
-        # 获取当前模型列表
         models = self.get_custom_openai_models()
-
-        # 查找并更新模型
+        updated = False
         for i, model in enumerate(models):
             if model.get('name') == model_name:
                 models[i] = model_config
-
-                # 保存模型列表
-                import json
-                self.config['CUSTOM_OPENAI_MODELS']['models'] = json.dumps(models, ensure_ascii=False)
-
-                # 保存配置
-                self.save_config()
-                return True
-
+                updated = True
+                break
+        
+        if updated:
+            import json
+            self.set_config('CUSTOM_OPENAI_MODELS', 'models', json.dumps(models, ensure_ascii=False))
+            # self.save_config() # Removed
+            return True
         return False
 
     def delete_custom_openai_model(self, model_name):
-        """删除一个自定义OpenAI模型配置
-
-        Args:
-            model_name: 要删除的模型名称
-
-        Returns:
-            成功返回 True，失败返回 False
-        """
+        """删除一个自定义OpenAI模型配置 (in-memory)"""
         if 'CUSTOM_OPENAI_MODELS' not in self.config:
             return False
 
-        # 获取当前模型列表
         models = self.get_custom_openai_models()
+        original_len = len(models)
+        models = [model for model in models if model.get('name') != model_name]
 
-        # 查找并删除模型
-        for i, model in enumerate(models):
-            if model.get('name') == model_name:
-                del models[i]
-
-                # 保存模型列表
-                import json
-                self.config['CUSTOM_OPENAI_MODELS']['models'] = json.dumps(models, ensure_ascii=False)
-
-                # 即使没有模型了，也不需要禁用自定义模型功能，始终启用
-
-                # 保存配置
-                self.save_config()
-                return True
-
+        if len(models) < original_len:
+            import json
+            self.set_config('CUSTOM_OPENAI_MODELS', 'models', json.dumps(models, ensure_ascii=False))
+            # self.save_config() # Removed
+            return True
         return False
 
     def get_custom_openai_model(self, model_name):
@@ -259,7 +212,11 @@ class ConfigManager:
 
         return None
 
-    def save_config(self):
-        """保存配置到文件"""
-        with open(self.config_path, 'w', encoding='utf-8') as f:
-            self.config.write(f)
+    # def save_config(self): # Removed, library should not write files unless explicitly told to.
+    #     """保存配置到文件"""
+    #     if self.config_path: # Only save if a path was originally provided
+    #         with open(self.config_path, 'w', encoding='utf-8') as f:
+    #             self.config.write(f)
+    #     else:
+    #         # Optionally raise an error or log that config cannot be saved without a path
+    #         pass

@@ -1,28 +1,61 @@
 import aiohttp
 import json
 import asyncio
-from models.ai_model import AIModel
+from .ai_model import AIModel # Changed import
 
 class GPTModel(AIModel):
     """OpenAI GPT模型实现"""
 
-    def __init__(self, config_manager):
+    def __init__(self, config=None, config_manager=None): # Added config parameter
         """
         初始化GPT模型
 
         Args:
-            config_manager: 配置管理器实例
+            config (dict, optional): 特定于此模型实例的配置 (e.g., api_key, model_name, base_url).
+            config_manager (ConfigManager, optional): 全局配置管理器.
         """
-        super().__init__(config_manager)
-        self.api_key = config_manager.get_api_key('gpt')
-        self.model_name = config_manager.get_model_name('gpt')
-        self.api_url = "https://api.openai.com/v1/chat/completions"
+        super().__init__(config_manager) # config_manager can be None
+
+        # API Key
+        if config and 'api_key' in config:
+            self.api_key = config['api_key']
+        elif config_manager:
+            self.api_key = config_manager.get_api_key('gpt')
+        else:
+            self.api_key = None
+
+        # Model Name
+        if config and 'model_name' in config:
+            self.model_name = config['model_name']
+        elif config_manager:
+            self.model_name = config_manager.get_model_name('gpt')
+        else:
+            self.model_name = None
+        
+        # API URL (base_url from select_model maps to api_url here)
+        if config and ('api_url' in config or 'base_url' in config) :
+            self.api_url = config.get('api_url') or config.get('base_url')
+        elif config_manager:
+            # OpenAI base URL is standard but can be overridden (e.g. for Azure OpenAI)
+            self.api_url = config_manager.get_config('GPT', 'api_url', fallback='https://api.openai.com/v1/chat/completions')
+        else:
+            self.api_url = 'https://api.openai.com/v1/chat/completions'
+
 
         if not self.api_key:
-            raise ValueError("OpenAI API密钥未配置")
+            if config_manager and not (config and 'api_key' in config):
+                self.api_key = config_manager.get_api_key('gpt')
+            if not self.api_key:
+                raise ValueError("OpenAI API密钥未配置 (gpt_api_key)")
 
         if not self.model_name:
-            self.model_name = "gpt-4-turbo"
+            if config_manager and not (config and 'model_name' in config):
+                self.model_name = config_manager.get_model_name('gpt')
+            if not self.model_name:
+                default_model = "gpt-4-turbo"
+                if config_manager:
+                    default_model = config_manager.get_config('GPT', 'default_model_name', fallback=default_model)
+                self.model_name = default_model
 
     async def generate(self, prompt, callback=None):
         """

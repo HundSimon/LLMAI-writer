@@ -4,42 +4,86 @@
 import aiohttp
 import json
 import asyncio
-from models.ai_model import AIModel
+from .ai_model import AIModel # Changed import
 
 class CustomOpenAIModel(AIModel):
     """自定义OpenAI兼容API模型实现"""
 
-    def __init__(self, config_manager, model_config=None):
+    def __init__(self, config=None, config_manager=None): # Renamed model_config to config for consistency
         """
         初始化自定义OpenAI兼容模型
 
         Args:
-            config_manager: 配置管理器实例
-            model_config: 可选的模型配置字典，如果提供则使用该配置，否则使用默认配置
+            config (dict, optional): 特定于此模型实例的配置 (e.g., name, api_key, model_name, base_url/api_url).
+            config_manager (ConfigManager, optional): 全局配置管理器.
         """
-        super().__init__(config_manager)
+        super().__init__(config_manager) # config_manager can be None
 
-        if model_config:
-            # 使用提供的模型配置
-            self.name = model_config.get('name', '自定义OpenAI模型')
-            self.api_key = model_config.get('api_key', '')
-            self.model_name = model_config.get('model_name', '')
-            self.api_url = model_config.get('api_url', '')
+        # Determine configuration source priority: instance config > config_manager > defaults
+        
+        # Name
+        if config and 'name' in config:
+            self.name = config['name']
+        elif config_manager:
+            # Custom OpenAI models might not have a single 'name' in config_manager,
+            # as it could manage multiple. For a generic one, we might use a default.
+            self.name = config_manager.get_config('CUSTOM_OPENAI', 'default_name', fallback='自定义OpenAI模型')
         else:
-            # 使用默认配置
-            self.name = '自定义OpenAI'
-            self.api_key = config_manager.get_api_key('custom_openai')
-            self.model_name = config_manager.get_model_name('custom_openai')
-            self.api_url = config_manager.get_config('CUSTOM_OPENAI', 'api_url', '')
+            self.name = '自定义OpenAI模型'
 
+        # API Key
+        if config and 'api_key' in config:
+            self.api_key = config['api_key']
+        elif config_manager:
+            # For a generic custom_openai, it might fetch a default key.
+            # If this class is used for *specific* named custom models from config, logic would differ.
+            self.api_key = config_manager.get_api_key('custom_openai') # Assumes a generic key in config
+        else:
+            self.api_key = None
+
+        # Model Name
+        if config and 'model_name' in config:
+            self.model_name = config['model_name']
+        elif config_manager:
+            self.model_name = config_manager.get_model_name('custom_openai') # Assumes a generic model name
+        else:
+            self.model_name = None
+
+        # API URL (base_url from select_model maps to api_url here)
+        if config and ('api_url' in config or 'base_url' in config) :
+            self.api_url = config.get('api_url') or config.get('base_url')
+        elif config_manager:
+            self.api_url = config_manager.get_config('CUSTOM_OPENAI', 'api_url', fallback=None)
+        else:
+            self.api_url = None
+            
+        # Validation after attempting to load from all sources
         if not self.api_key:
-            raise ValueError(f"模型 '{self.name}' 的API密钥未配置")
+            # Try one last time from config_manager if not in instance config
+            if config_manager and not (config and 'api_key' in config):
+                self.api_key = config_manager.get_api_key(self.name) # Try with specific name if available
+                if not self.api_key: # Try generic if specific name fails
+                    self.api_key = config_manager.get_api_key('custom_openai')
+            if not self.api_key:
+                raise ValueError(f"模型 '{self.name}' 的API密钥未配置")
 
         if not self.model_name:
-            raise ValueError(f"模型 '{self.name}' 的模型名称未配置")
+            if config_manager and not (config and 'model_name' in config):
+                self.model_name = config_manager.get_model_name(self.name) # Try with specific name
+                if not self.model_name:
+                     self.model_name = config_manager.get_model_name('custom_openai')
+            if not self.model_name: # If still not found, it's an issue
+                # It could have a hardcoded default, but for "custom" it should be specified.
+                raise ValueError(f"模型 '{self.name}' 的模型名称未配置")
+
 
         if not self.api_url:
-            raise ValueError(f"模型 '{self.name}' 的API地址未配置")
+            if config_manager and not (config and ('api_url' in config or 'base_url' in config)):
+                 self.api_url = config_manager.get_config(self.name, 'api_url', fallback=None) # Try with specific name
+                 if not self.api_url:
+                      self.api_url = config_manager.get_config('CUSTOM_OPENAI', 'api_url', fallback=None)
+            if not self.api_url:
+                raise ValueError(f"模型 '{self.name}' 的API地址未配置")
 
     async def generate(self, prompt, callback=None):
         """
