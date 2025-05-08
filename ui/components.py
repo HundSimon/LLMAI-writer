@@ -21,6 +21,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QSize, QTimer, QPoint
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QFont, QColor, QPalette, QAction
 
 from utils.async_utils import GenerationThread, ProgressIndicator, AsyncHelper
+from ui.styles import get_style
 
 
 class AIGenerateDialog(QDialog):
@@ -31,31 +32,57 @@ class AIGenerateDialog(QDialog):
     """
 
     def __init__(self, parent=None, title="AI生成", field_name="内容", current_text="",
-                 models=None, default_model="GPT", outline_info=None, context_info=None):
+                 models=None, default_model="GPT", outline_info=None, context_info=None, prompt_manager=None,
+                 task_type="generate", selected_text=None, full_text=None, target_word_count=None): # 添加新参数 target_word_count
         """
         初始化AI生成对话框
 
         Args:
             parent: 父窗口
             title: 对话框标题
-            field_name: 字段名称
-            current_text: 当前文本
+            field_name: 字段名称 (例如 "章节内容", "章节摘要")
+            current_text: 当前文本 (用于生成任务的上下文或基础)
             models: 可用的模型列表
             default_model: 默认选择的模型
-            outline_info: 总大纲信息，包含标题、中心思想、故事梦概和世界观设定
-            context_info: 上下文信息，如卷标题、卷简介、章节标题等
+            outline_info: 总大纲信息
+            context_info: 上下文信息
+            prompt_manager: 提示词管理器实例
+            task_type: 任务类型 ('generate' 或 'polish')
+            selected_text: 用户选定的文本 (用于润色任务)
+            full_text: 完整的章节文本 (用于润色任务的上下文)
+            target_word_count: 目标字数 (可选)
         """
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(600, 500)
         self.field_name = field_name
-        self.current_text = current_text
+        self.current_text = current_text # 对于润色任务，这个可能为空
         self.result_text = ""
         self.generation_thread = None
-        self.models = models or ["GPT", "Claude", "Gemini", "自定义OpenAI", "ModelScope"]
+        self.models = models or ["GPT", "Claude", "Gemini", "自定义OpenAI", "ModelScope", "Ollama", "SiliconFlow"] # 保持模型列表更新
         self.default_model = default_model if default_model in self.models else self.models[0]
         self.outline_info = outline_info or {}
         self.context_info = context_info or {}
+        # 保存新参数
+        self.task_type = task_type
+        self.selected_text = selected_text
+        self.full_text = full_text
+        self.target_word_count = target_word_count # 保存目标字数
+
+        # 获取提示词管理器
+        if prompt_manager:
+            self.prompt_manager = prompt_manager
+        else:
+            # 尝试从父窗口获取
+            try:
+                if hasattr(parent, 'prompt_manager'):
+                    self.prompt_manager = parent.prompt_manager
+                elif hasattr(parent, 'main_window') and hasattr(parent.main_window, 'prompt_manager'):
+                    self.prompt_manager = parent.main_window.prompt_manager
+                else:
+                    self.prompt_manager = None
+            except:
+                self.prompt_manager = None
 
         # 初始化UI
         self._init_ui()
@@ -76,15 +103,65 @@ class AIGenerateDialog(QDialog):
 
         self.prompt_edit = QTextEdit()
 
-        # 构建默认提示词
-        default_prompt = f"请根据以下内容，生成一个新的{self.field_name}：\n\n"
+        # 构建默认提示词 - 根据任务类型区分
+        default_prompt = ""
+        if self.task_type == "polish":
+            # 构建润色任务的提示词
+            default_prompt = f"""请根据以下上下文信息和要求，润色指定的文本段落。
 
-        # 添加总大纲信息（如果有）
-        if self.outline_info:
-            if self.outline_info.get("title"):
-                default_prompt += f"小说标题：{self.outline_info.get('title')}\n"
-            if self.outline_info.get("theme"):
-                default_prompt += f"中心思想：{self.outline_info.get('theme')}\n"
+**任务要求:**
+1.  **重点润色**以下被 `[润色目标开始]` 和 `[润色目标结束]` 标记的文本段落。
+2.  润色目标是使其语言更**生动、流畅、精炼**（或根据需要调整目标）。
+3.  保持原文的核心意思和情节不变。
+4.  确保润色后的文本与上下文**自然衔接**，风格保持一致。
+5.  **只返回**润色后的目标文本段落本身，不要包含标记符或原文的其他部分。
+"""
+            # 移除润色任务的目标字数要求
+            # if self.target_word_count: # 添加目标字数要求（可选）
+            #     default_prompt += f"6. 目标字数：{self.target_word_count}字左右（仅供参考，优先保证润色质量）。\n"
+            default_prompt += """
+**小说信息:**
+"""
+            # 添加总大纲信息
+            if self.outline_info: # 确保 outline_info 存在
+                # 使用明确的4空格缩进重写此块
+                if self.outline_info.get("title"):
+                    default_prompt += f"- 小说标题：{self.outline_info.get('title')}\n"
+                if self.outline_info.get("theme"):
+                    default_prompt += f"- 中心思想：{self.outline_info.get('theme')}\n"
+                if self.outline_info.get("synopsis"):
+                    default_prompt += f"- 故事梗概：{self.outline_info.get('synopsis')}\n"
+                if self.outline_info.get("worldbuilding"):
+                    default_prompt += f"- 世界观设定：{self.outline_info.get('worldbuilding')}\n"
+            # 确保此行与 if self.outline_info: 对齐
+            default_prompt += "\n**章节上下文:**\n"
+            # 添加章节上下文
+            if self.context_info: # 确保 context_info 存在
+                 if self.context_info.get("chapter_title"): default_prompt += f"- 当前章节：{self.context_info.get('chapter_title')}\n"
+                 # 可以考虑添加前后章节摘要等 context_info 中的其他信息
+
+            default_prompt += f"""
+**完整章节内容 (包含需要润色的部分):**
+---
+{self.full_text if self.full_text else '(缺少完整章节内容)'}
+---
+
+**需要润色的文本段落:**
+[润色目标开始]
+{self.selected_text if self.selected_text else '(缺少选定文本)'}
+[润色目标结束]
+
+请开始润色，只输出润色后的目标段落："""
+
+        else:
+            # 保持原来的生成任务提示词逻辑
+            default_prompt = f"请根据以下内容，生成一个新的{self.field_name}：\n\n"
+            # 添加总大纲信息（如果有）
+            if self.outline_info:
+                if self.outline_info.get("title"): # 确保 outline_info 存在，并使用明确的4空格缩进重写此块
+                    default_prompt += f"小说标题：{self.outline_info.get('title')}\n"
+                if self.outline_info.get("theme"): # 确保 outline_info 存在，并使用明确的4空格缩进重写此块
+                    default_prompt += f"中心思想：{self.outline_info.get('theme')}\n"
             if self.outline_info.get("synopsis"):
                 default_prompt += f"故事梦概：{self.outline_info.get('synopsis')}\n"
             if self.outline_info.get("worldbuilding"):
@@ -107,6 +184,18 @@ class AIGenerateDialog(QDialog):
                     default_prompt += f"章节标题：{self.context_info.get('chapter_title')}\n"
                 if self.context_info.get("chapter_number"):
                     default_prompt += f"当前章节序号：第{self.context_info.get('chapter_number')}章\n"
+
+                # 添加章节出场角色信息
+                chapter_characters = self.context_info.get("chapter_characters", [])
+                if chapter_characters:
+                    default_prompt += "\n本章出场角色：\n"
+                    for character in chapter_characters:
+                        name = character.get("name", "未命名角色")
+                        identity = character.get("identity", "")
+                        personality = character.get("personality", "")
+                        background = character.get("background", "")
+                        default_prompt += f"- {name}：{identity}\n  性格：{personality}\n  背景：{background}\n"
+                    default_prompt += "\n"
 
                 # 添加当前章节摘要（如果有）
                 current_summary = self.current_text.strip()
@@ -146,6 +235,19 @@ class AIGenerateDialog(QDialog):
                     default_prompt += f"章节标题：{self.context_info.get('chapter_title')}\n"
                 if self.context_info.get("chapter_number"):
                     default_prompt += f"当前章节序号：第{self.context_info.get('chapter_number')}章\n"
+
+                # 添加章节出场角色信息
+                chapter_characters = self.context_info.get("chapter_characters", [])
+                if chapter_characters:
+                    default_prompt += "\n本章出场角色：\n"
+                    for character in chapter_characters:
+                        name = character.get("name", "未命名角色")
+                        identity = character.get("identity", "")
+                        personality = character.get("personality", "")
+                        background = character.get("background", "")
+                        default_prompt += f"- {name}：{identity}\n  性格：{personality}\n  背景：{background}\n"
+                    default_prompt += "\n"
+
                 default_prompt += "\n"
 
                 # 添加前10章的标题和摘要
@@ -159,9 +261,9 @@ class AIGenerateDialog(QDialog):
                 # 添加前一章的内容
                 previous_chapter_content = self.context_info.get("previous_chapter_content", "")
                 if previous_chapter_content:
-                    # 如果前一章内容过长，只取前2000个字符
-                    if len(previous_chapter_content) > 2000:
-                        previous_chapter_content = previous_chapter_content[:2000] + "...(省略后续内容)"
+                    # 如果前一章内容过长，只取前5000个字符
+                    if len(previous_chapter_content) > 5000:
+                        previous_chapter_content = previous_chapter_content[:5000] + "...(省略后续内容)"
                     default_prompt += "前一章的内容：\n\n"
                     default_prompt += f"{previous_chapter_content}\n\n"
 
@@ -183,8 +285,11 @@ class AIGenerateDialog(QDialog):
         # 添加章节内容生成的特殊要求
         if self.field_name == "章节内容":
             default_prompt += "要求：\n1. 生成完整的章节内容\n2. 保持原有风格\n3. 更加生动详细\n4. 逻辑连贯\n5. 与小说的整体设定保持一致\n6. 与前后章节内容保持连贯"
+            if self.target_word_count: # 添加目标字数要求
+                default_prompt += f"\n7. 目标字数：{self.target_word_count}字左右"
         else:
             default_prompt += "要求：\n1. 保持原有风格\n2. 更加生动详细\n3. 逻辑连贯\n4. 与小说的整体设定保持一致"
+            # 其他字段类型也可以添加字数要求，如果需要的话
 
         self.prompt_edit.setPlainText(default_prompt)
         prompt_layout.addWidget(self.prompt_edit)
@@ -194,14 +299,46 @@ class AIGenerateDialog(QDialog):
         template_layout.addWidget(QLabel("选择模板:"))
 
         self.template_combo = QComboBox()
-        self.template_combo.addItems(["默认模板", "详细描述模板", "简洁模板", "创意模板"])
+
+        # 加载模板
+        if self.prompt_manager:
+            # 添加默认选项
+            self.template_combo.addItem("选择提示词模板")
+
+            # 根据字段名称确定模板分类
+            category = "general"
+            if self.field_name == "章节内容":
+                category = "chapter"
+            elif self.field_name == "章节摘要":
+                category = "chapter_summary"
+            elif self.field_name in ["标题", "中心思想", "故事梗概", "世界观设定"]:
+                category = "outline"
+
+            # 加载对应分类的模板
+            templates = self.prompt_manager.get_templates_by_category(category)
+            for template in templates:
+                self.template_combo.addItem(template.name)
+        else:
+            # 如果没有提示词管理器，使用默认模板
+            self.template_combo.addItems(["默认模板", "详细描述模板", "简洁模板", "创意模板"])
+
         self.template_combo.currentIndexChanged.connect(self._on_template_changed)
         template_layout.addWidget(self.template_combo)
 
-        # 添加保存模板按钮
-        self.save_template_button = QPushButton("保存为模板")
-        self.save_template_button.clicked.connect(self._save_as_template)
-        template_layout.addWidget(self.save_template_button)
+        # 添加模板管理按钮
+        self.new_template_button = QPushButton("新建模板")
+        self.new_template_button.clicked.connect(self._create_new_template)
+        template_layout.addWidget(self.new_template_button)
+
+        self.edit_template_button = QPushButton("编辑模板")
+        self.edit_template_button.clicked.connect(self._edit_template)
+        self.edit_template_button.setEnabled(False)  # 初始禁用
+        template_layout.addWidget(self.edit_template_button)
+
+        self.delete_template_button = QPushButton("删除模板")
+        self.delete_template_button.clicked.connect(self._delete_template)
+        self.delete_template_button.setEnabled(False)  # 初始禁用
+        template_layout.addWidget(self.delete_template_button)
 
         template_layout.addStretch()
         prompt_layout.addLayout(template_layout)
@@ -252,7 +389,7 @@ class AIGenerateDialog(QDialog):
         # 按钮部分
         button_layout = QHBoxLayout()
 
-        self.use_button = QPushButton("使用结果")
+        self.use_button = QPushButton("保存并使用")
         self.use_button.clicked.connect(self.accept)
         self.use_button.setEnabled(False)
         button_layout.addWidget(self.use_button)
@@ -284,6 +421,23 @@ class AIGenerateDialog(QDialog):
 
     def _on_template_changed(self, index):
         """模板选择变更事件"""
+        # 启用/禁用删除模板按钮和编辑模板按钮
+        if index <= 0 or not self.prompt_manager:  # 第一项是提示文本或没有提示词管理器
+            self.delete_template_button.setEnabled(False)
+            self.edit_template_button.setEnabled(False)
+        else:
+            self.delete_template_button.setEnabled(True)
+            self.edit_template_button.setEnabled(True)
+
+        # 如果有提示词管理器且选择了有效模板
+        if self.prompt_manager and index > 0:
+            template_name = self.template_combo.currentText()
+            template = self.prompt_manager.get_template(template_name)
+            if template:
+                self.prompt_edit.setPlainText(template.content)
+                return
+
+        # 如果没有提示词管理器或没有选择有效模板，使用默认模板
         # 构建基本提示词前缀（包含总大纲信息和上下文信息）
         prefix = f"请根据以下内容，生成一个新的{self.field_name}：\n\n"
 
@@ -318,29 +472,220 @@ class AIGenerateDialog(QDialog):
         # 添加当前文本
         content = f"{self.current_text}\n\n"
 
-        templates = {
-            0: prefix + content + "要求：\n1. 保持原有风格\n2. 更加生动详细\n3. 逻辑连贯\n4. 与小说的整体设定保持一致",
-            1: prefix + content + "要求：\n1. 保持原有风格和主题\n2. 增加细节描写和背景信息\n3. 使用丰富的修辞手法\n4. 确保逻辑连贯和情节合理\n5. 与小说的整体设定保持一致",
-            2: prefix + content + "要求：\n1. 保持核心内容和主题\n2. 使用简洁有力的语言\n3. 去除冗余信息\n4. 突出重点\n5. 与小说的整体设定保持一致",
-            3: prefix + content + "要求：\n1. 保持基本主题\n2. 加入创新的元素和视角\n3. 使用富有想象力的语言\n4. 创造出令人惊喜的内容\n5. 与小说的整体设定保持一致"
-        }
+        # 如果没有提示词管理器，使用默认模板
+        if not self.prompt_manager:
+            templates = {
+                0: prefix + content + "要求：\n1. 保持原有风格\n2. 更加生动详细\n3. 逻辑连贯\n4. 与小说的整体设定保持一致",
+                1: prefix + content + "要求：\n1. 保持原有风格和主题\n2. 增加细节描写和背景信息\n3. 使用丰富的修辞手法\n4. 确保逻辑连贯和情节合理\n5. 与小说的整体设定保持一致",
+                2: prefix + content + "要求：\n1. 保持核心内容和主题\n2. 使用简洁有力的语言\n3. 去除冗余信息\n4. 突出重点\n5. 与小说的整体设定保持一致",
+                3: prefix + content + "要求：\n1. 保持基本主题\n2. 加入创新的元素和视角\n3. 使用富有想象力的语言\n4. 创造出令人惊喜的内容\n5. 与小说的整体设定保持一致"
+            }
 
-        if index in templates:
-            self.prompt_edit.setPlainText(templates[index])
+            if index in templates:
+                self.prompt_edit.setPlainText(templates[index])
+
+    def _create_new_template(self):
+        """创建新模板"""
+        if not self.prompt_manager:
+            QMessageBox.warning(self, "错误", "无法获取提示词管理器")
+            return
+
+        # 创建编辑对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("创建新模板")
+        dialog.resize(600, 500)
+
+        layout = QVBoxLayout(dialog)
+
+        # 模板名称
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("模板名称:"))
+        name_edit = QLineEdit(f"自定义{self.field_name}模板_{len(self.prompt_manager.get_templates_by_category('general')) + 1}")
+        name_layout.addWidget(name_edit)
+        layout.addLayout(name_layout)
+
+        # 模板描述
+        desc_layout = QHBoxLayout()
+        desc_layout.addWidget(QLabel("模板描述:"))
+        desc_edit = QLineEdit(f"自定义{self.field_name}生成模板")
+        desc_layout.addWidget(desc_edit)
+        layout.addLayout(desc_layout)
+
+        # 模板分类
+        category_layout = QHBoxLayout()
+        category_layout.addWidget(QLabel("模板分类:"))
+        category_edit = QLineEdit()
+
+        # 根据字段名称设置默认分类
+        if self.field_name == "章节内容":
+            category_edit.setText("chapter")
+        elif self.field_name == "章节摘要":
+            category_edit.setText("chapter_summary")
+        elif self.field_name in ["标题", "中心思想", "故事梗概", "世界观设定"]:
+            category_edit.setText("outline")
+        else:
+            category_edit.setText("general")
+
+        category_layout.addWidget(category_edit)
+        layout.addLayout(category_layout)
+
+        # 模板内容
+        content_label = QLabel("模板内容:")
+        layout.addWidget(content_label)
+
+        content_edit = QTextEdit()
+        content_edit.setPlainText(self.prompt_edit.toPlainText())
+        layout.addWidget(content_edit)
+
+        # 按钮
+        button_layout = QHBoxLayout()
+
+        save_button = QPushButton("保存")
+        save_button.clicked.connect(dialog.accept)
+        button_layout.addWidget(save_button)
+
+        cancel_button = QPushButton("取消")
+        cancel_button.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_button)
+
+        layout.addLayout(button_layout)
+
+        # 显示对话框
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            template_name = name_edit.text()
+            template_content = content_edit.toPlainText()
+            template_desc = desc_edit.text()
+            template_category = category_edit.text()
+
+            # 添加模板
+            success = self.prompt_manager.add_template(
+                template_name,
+                template_content,
+                template_category,
+                template_desc
+            )
+
+            if success:
+                # 添加到下拉框
+                self.template_combo.addItem(template_name)
+                self.template_combo.setCurrentText(template_name)
+
+                QMessageBox.information(self, "保存成功", f"模板 '{template_name}' 已创建")
+            else:
+                QMessageBox.warning(self, "保存失败", f"模板 '{template_name}' 已存在或保存失败")
 
     def _save_as_template(self):
         """保存当前提示词为模板"""
+        if not self.prompt_manager:
+            QMessageBox.warning(self, "错误", "无法获取提示词管理器")
+            return
+
         template_name, ok = QInputDialog.getText(
             self, "保存模板", "请输入模板名称:",
             text=f"自定义{self.field_name}模板"
         )
 
         if ok and template_name:
-            # 这里应该实现模板保存逻辑
-            # 简单起见，这里只是添加到下拉框
-            self.template_combo.addItem(template_name)
-            self.template_combo.setCurrentText(template_name)
-            QMessageBox.information(self, "保存成功", f"模板 '{template_name}' 已保存")
+            # 获取模板描述
+            template_desc, ok = QInputDialog.getText(
+                self, "模板描述", "请输入模板描述:",
+                text=f"基于当前设置创建的{self.field_name}模板"
+            )
+
+            if ok:
+                # 确定模板分类
+                category = "general"
+                if self.field_name == "章节内容":
+                    category = "chapter"
+                elif self.field_name == "章节摘要":
+                    category = "chapter_summary"
+                elif self.field_name in ["标题", "中心思想", "故事梗概", "世界观设定"]:
+                    category = "outline"
+
+                # 添加模板
+                success = self.prompt_manager.add_template(
+                    template_name,
+                    self.prompt_edit.toPlainText(),
+                    category,
+                    template_desc
+                )
+
+                if success:
+                    # 添加到下拉框
+                    self.template_combo.addItem(template_name)
+                    self.template_combo.setCurrentText(template_name)
+
+                    QMessageBox.information(self, "保存成功", f"模板 '{template_name}' 已保存")
+                else:
+                    QMessageBox.warning(self, "保存失败", f"模板 '{template_name}' 已存在或保存失败")
+
+    def _edit_template(self):
+        """编辑当前选中的模板"""
+        if not self.prompt_manager:
+            QMessageBox.warning(self, "错误", "无法获取提示词管理器")
+            return
+
+        if self.template_combo.currentIndex() <= 0:
+            return
+
+        template_name = self.template_combo.currentText()
+        template = self.prompt_manager.get_template(template_name)
+
+        if not template:
+            QMessageBox.warning(self, "错误", f"无法获取模板 '{template_name}'")
+            return
+
+        # 确定模板分类
+        category = template.category
+
+        # 获取当前编辑器中的内容
+        current_content = self.prompt_edit.toPlainText()
+
+        # 更新模板
+        success = self.prompt_manager.update_template(
+            template_name,
+            current_content,
+            category,
+            template.description
+        )
+
+        if success:
+            QMessageBox.information(self, "保存成功", f"模板 '{template_name}' 已更新")
+        else:
+            QMessageBox.warning(self, "保存失败", f"无法更新模板 '{template_name}'")
+
+    def _delete_template(self):
+        """删除当前选中的模板"""
+        if not self.prompt_manager:
+            QMessageBox.warning(self, "错误", "无法获取提示词管理器")
+            return
+
+        if self.template_combo.currentIndex() <= 0:
+            return
+
+        template_name = self.template_combo.currentText()
+
+        # 确认删除
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定要删除模板 '{template_name}' 吗？此操作不可撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # 删除模板
+            success = self.prompt_manager.delete_template(template_name)
+
+            if success:
+                # 从下拉框中移除
+                current_index = self.template_combo.currentIndex()
+                self.template_combo.removeItem(current_index)
+
+                QMessageBox.information(self, "删除成功", f"模板 '{template_name}' 已删除")
+            else:
+                QMessageBox.warning(self, "删除失败", f"模板 '{template_name}' 删除失败")
 
     def _copy_result(self):
         """复制结果到剪贴板"""
@@ -368,8 +713,14 @@ class AIGenerateDialog(QDialog):
             model_type = "custom_openai"
         elif model_text == "modelscope":
             model_type = "modelscope"
+        elif model_text == "ollama": # 添加对Ollama的判断
+            model_type = "ollama"
+        elif model_text == "siliconflow": # 添加对SiliconFlow的判断
+            model_type = "siliconflow"
         else:
-            model_type = "gpt"  # 默认使用GPT
+            # 如果下拉框里出现了这里没有处理的选项，显示错误
+            QMessageBox.warning(self, "错误", f"无法识别的模型类型: {self.model_combo.currentText()}")
+            return # 不继续执行生成
         try:
             # 尝试不同的方式获取main_window
             if hasattr(self.parent(), 'main_window'):
@@ -535,8 +886,13 @@ class ThemeManager:
     def _set_light_theme(self):
         """设置明亮主题"""
         self.app.setStyle("Fusion")
+
+        # 使用默认调色板
         palette = QPalette()
         self.app.setPalette(palette)
+
+        # 应用明亮主题样式表
+        self.app.setStyleSheet(get_style("light"))
 
     def _set_dark_theme(self):
         """设置深色主题"""
@@ -560,6 +916,9 @@ class ThemeManager:
 
         # 设置调色板
         self.app.setPalette(palette)
+
+        # 应用深色主题样式表
+        self.app.setStyleSheet(get_style("dark"))
 
 
 class StatusBarManager:

@@ -153,7 +153,8 @@ class NovelDataManager:
         self.novel_data = {
             "outline": None,
             "chapters": {},
-            "metadata": {}
+            "metadata": {},
+            "relationships": {} # ✨ 人物关系就放这儿！
         }
         self.cache_enabled = cache_enabled
         self.cache = Cache() if cache_enabled else None
@@ -168,8 +169,8 @@ class NovelDataManager:
             outline: 大纲数据
         """
         self.novel_data["outline"] = outline
-        self.modified = True
-        
+        self.mark_modified() # 使用新方法
+
         # 清除相关缓存
         if self.cache_enabled:
             self.cache.delete("outline")
@@ -203,8 +204,8 @@ class NovelDataManager:
         """
         key = f"{volume_index}_{chapter_index}"
         self.novel_data["chapters"][key] = content
-        self.modified = True
-        
+        self.mark_modified() # 使用新方法
+
         # 清除相关缓存
         if self.cache_enabled:
             self.cache.delete(f"chapter_{key}")
@@ -244,7 +245,7 @@ class NovelDataManager:
             value: 元数据值
         """
         self.novel_data["metadata"][key] = value
-        self.modified = True
+        self.mark_modified() # 使用新方法
     
     def get_metadata(self, key: str, default: Any = None) -> Any:
         """
@@ -258,7 +259,27 @@ class NovelDataManager:
             元数据值
         """
         return self.novel_data["metadata"].get(key, default)
-    
+
+    def set_relationships(self, relationships_data: Dict[Any, Any]) -> None: # 改为 Any, Any 兼容可能的键转换
+        """
+        设置人物关系数据
+
+        Args:
+            relationships_data: 人物关系字典
+        """
+        self.novel_data["relationships"] = relationships_data
+        self.mark_modified() # 标记已修改
+
+    def get_relationships(self) -> Dict[Any, Any]:
+        """
+        获取人物关系数据
+
+        Returns:
+            人物关系字典 (返回副本)
+        """
+        # 返回一个副本，防止外部直接修改内部数据
+        return self.novel_data.get("relationships", {}).copy()
+
     def save_to_file(self, filepath: str) -> bool:
         """
         保存到文件
@@ -305,8 +326,13 @@ class NovelDataManager:
             if "outline" not in data:
                 return False
             
-            # 更新数据
-            self.novel_data = data
+            # 更新数据，确保所有预期的键都存在
+            self.novel_data = {
+                "outline": data.get("outline"),
+                "chapters": data.get("chapters", {}),
+                "metadata": data.get("metadata", {}),
+                "relationships": data.get("relationships", {}) # 加载人物关系，兼容旧文件
+            }
             self.modified = False
             self.current_file = filepath
             
@@ -327,13 +353,18 @@ class NovelDataManager:
             是否已修改
         """
         return self.modified
-    
+
+    def mark_modified(self):
+        """标记数据已被修改"""
+        self.modified = True
+
     def clear(self) -> None:
         """清空数据"""
         self.novel_data = {
             "outline": None,
             "chapters": {},
-            "metadata": {}
+            "metadata": {},
+            "relationships": {} # 清空人物关系
         }
         self.modified = False
         self.current_file = None

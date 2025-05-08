@@ -18,7 +18,8 @@ class ModelScopeModel(AIModel):
         super().__init__(config_manager)
         self.api_key = config_manager.get_api_key('modelscope')
         self.model_name = config_manager.get_model_name('modelscope')
-        self.base_url = config_manager.get_config('MODELSCOPE', 'base_url', 'https://api-inference.modelscope.cn/v1/')
+        # 使用默认的ModelScope API地址
+        self.base_url = 'https://api-inference.modelscope.cn/v1/'
 
         if not self.api_key:
             raise ValueError("ModelScope API密钥未配置")

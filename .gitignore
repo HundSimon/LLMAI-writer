@@ -26,3 +26,16 @@ config.ini
 
 # 日志文件
 *.log
+
+# Docker相关
+# 不排除Docker文件，但排除Docker生成的临时文件
+.docker/
+docker-compose.override.yml
+
+# 确保保留以下文件
+!Dockerfile
+!docker-compose.yml
+!.dockerignore
+!run_docker.sh
+!run_docker.bat
+!README.docker.md

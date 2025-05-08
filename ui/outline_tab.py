@@ -1,16 +1,20 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import json
 import asyncio
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QTextEdit, QPushButton, QComboBox, QGroupBox, QFormLayout,
     QSpinBox, QDoubleSpinBox, QMessageBox, QSplitter, QFileDialog, QProgressBar,
-    QDialog, QInputDialog
+    QDialog, QInputDialog, QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 
 from generators.outline_generator import OutlineGenerator
 from utils.async_utils import GenerationThread, ProgressIndicator
 from utils.prompt_manager import PromptManager
+from ui.character_selector_dialog import CharacterSelectorDialog
 
 
 class OutlineTab(QWidget):
@@ -23,6 +27,7 @@ class OutlineTab(QWidget):
         self.outline_generator = None
         self.generation_thread = None
         self.progress_indicator = ProgressIndicator(self)
+        self.selected_characters = []  # 初始化选中的角色列表
 
         # 获取提示词管理器
         self.prompt_manager = self.main_window.prompt_manager
@@ -48,7 +53,9 @@ class OutlineTab(QWidget):
         model_layout = QFormLayout()
 
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["GPT", "Claude", "Gemini", "自定义OpenAI", "ModelScope"])
+        # 只添加标准模型，不显示具体的自定义模型
+        self.model_combo.addItems(["GPT", "Claude", "Gemini", "自定义OpenAI", "ModelScope", "Ollama", "SiliconFlow"]) # 直接添加到硬编码列表
+
         model_layout.addRow("AI模型:", self.model_combo)
 
         # 温度设置已移除
@@ -67,15 +74,20 @@ class OutlineTab(QWidget):
         self.template_combo.currentIndexChanged.connect(self._on_template_selected)
         template_layout.addWidget(self.template_combo)
 
-        # 添加编辑和保存模板按钮
+        # 添加新建、编辑和保存模板按钮
+        self.new_template_button = QPushButton("新建")
+        self.new_template_button.clicked.connect(self._create_new_template)
+        template_layout.addWidget(self.new_template_button)
+
         self.edit_template_button = QPushButton("编辑")
         self.edit_template_button.setEnabled(False)
         self.edit_template_button.clicked.connect(self._edit_template)
         template_layout.addWidget(self.edit_template_button)
 
-        self.save_template_button = QPushButton("保存")
-        self.save_template_button.clicked.connect(self._save_as_template)
-        template_layout.addWidget(self.save_template_button)
+        self.delete_template_button = QPushButton("删除")
+        self.delete_template_button.clicked.connect(self._delete_template)
+        self.delete_template_button.setEnabled(False)  # 初始禁用
+        template_layout.addWidget(self.delete_template_button)
 
         model_layout.addRow("提示词模板:", template_layout)
 
@@ -114,21 +126,21 @@ class OutlineTab(QWidget):
 
         # 添加卷数设置
         self.volume_count_spin = QSpinBox()
-        self.volume_count_spin.setRange(1, 20)
+        self.volume_count_spin.setRange(1, 9999)  # 增加最大值限制
         self.volume_count_spin.setValue(3)
         self.volume_count_spin.setSuffix(" 卷")
         info_layout.addRow("卷数:", self.volume_count_spin)
 
         # 添加每卷章节数设置
         self.chapters_per_volume_spin = QSpinBox()
-        self.chapters_per_volume_spin.setRange(3, 30)
+        self.chapters_per_volume_spin.setRange(1, 9999)  # 增加最大值限制
         self.chapters_per_volume_spin.setValue(10)
         self.chapters_per_volume_spin.setSuffix(" 章/卷")
         info_layout.addRow("每卷章节数:", self.chapters_per_volume_spin)
 
         # 添加每章字数设置
         self.words_per_chapter_spin = QSpinBox()
-        self.words_per_chapter_spin.setRange(1000, 10000)
+        self.words_per_chapter_spin.setRange(100, 100000)
         self.words_per_chapter_spin.setValue(3000)
         self.words_per_chapter_spin.setSingleStep(500)
         self.words_per_chapter_spin.setSuffix(" 字/章")
@@ -136,37 +148,47 @@ class OutlineTab(QWidget):
 
         # 创建角色设置组
         character_group = QGroupBox("角色设置")
-        character_layout = QFormLayout()
+        character_group_layout = QVBoxLayout()
 
-        # 添加主角数量设置
-        self.protagonist_count_spin = QSpinBox()
-        self.protagonist_count_spin.setRange(1, 5)
-        self.protagonist_count_spin.setValue(1)
-        self.protagonist_count_spin.setSuffix(" 个")
-        character_layout.addRow("主角数量:", self.protagonist_count_spin)
+        # 创建滚动区域
+        character_scroll = QScrollArea()
+        character_scroll.setWidgetResizable(True)
+        character_scroll.setFrameShape(QScrollArea.Shape.NoFrame)  # 移除边框
 
-        # 添加重要角色数量设置
-        self.important_count_spin = QSpinBox()
-        self.important_count_spin.setRange(0, 10)
-        self.important_count_spin.setValue(3)
-        self.important_count_spin.setSuffix(" 个")
-        character_layout.addRow("重要角色数量:", self.important_count_spin)
+        # 创建内容widget
+        character_content = QWidget()
+        character_layout = QFormLayout(character_content)
+        character_layout.setContentsMargins(0, 0, 0, 0)  # 减少边距
 
-        # 添加配角数量设置
-        self.supporting_count_spin = QSpinBox()
-        self.supporting_count_spin.setRange(0, 20)
-        self.supporting_count_spin.setValue(5)
-        self.supporting_count_spin.setSuffix(" 个")
-        character_layout.addRow("配角数量:", self.supporting_count_spin)
+        # 添加新生成角色数量设置
+        self.new_character_count_spin = QSpinBox()
+        self.new_character_count_spin.setRange(0, 100)
+        self.new_character_count_spin.setValue(5)
+        self.new_character_count_spin.setSuffix(" 个")
+        character_layout.addRow("新生成角色数量:", self.new_character_count_spin)
 
-        # 添加龙套数量设置
-        self.minor_count_spin = QSpinBox()
-        self.minor_count_spin.setRange(0, 30)
-        self.minor_count_spin.setValue(10)
-        self.minor_count_spin.setSuffix(" 个")
-        character_layout.addRow("龙套数量:", self.minor_count_spin)
+        # 添加选择当前范围大纲出现角色的按钮
+        self.selected_characters = []  # 存储选中的角色
+        character_select_layout = QHBoxLayout()
+        self.character_select_button = QPushButton("选择角色")
+        self.character_select_button.clicked.connect(self._select_characters)
+        character_select_layout.addWidget(self.character_select_button)
 
-        character_group.setLayout(character_layout)
+        self.character_count_label = QLabel("已选择: 0 个角色")
+        character_select_layout.addWidget(self.character_count_label)
+
+        character_layout.addRow("选择出场角色:", character_select_layout)
+
+        # 设置滚动区域的内容
+        character_scroll.setWidget(character_content)
+
+        # 添加滚动区域到角色设置组
+        character_group_layout.addWidget(character_scroll)
+        character_group.setLayout(character_group_layout)
+
+        # 设置最小高度，确保至少显示两个选项
+        character_group.setMinimumHeight(100)
+
         info_layout.addRow(character_group)
 
         info_group.setLayout(info_layout)
@@ -177,6 +199,7 @@ class OutlineTab(QWidget):
         button_layout = QVBoxLayout()
 
         self.generate_button = QPushButton("生成大纲")
+        self.generate_button.setProperty("primary", True)  # 设置为主要按钮
         self.generate_button.clicked.connect(self.generate_outline)
         button_layout.addWidget(self.generate_button)
 
@@ -195,6 +218,49 @@ class OutlineTab(QWidget):
         # 创建右侧面板
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
+
+        # 创建生成范围控制组
+        range_group = QGroupBox("生成范围")
+        range_layout = QHBoxLayout()
+
+        # 起始卷号
+        start_volume_layout = QHBoxLayout()
+        start_volume_layout.addWidget(QLabel("起始卷:"))
+        self.start_volume_spin = QSpinBox()
+        self.start_volume_spin.setRange(1, 9999)  # 增加最大值限制
+        self.start_volume_spin.setValue(1)
+        start_volume_layout.addWidget(self.start_volume_spin)
+        range_layout.addLayout(start_volume_layout)
+
+        # 起始章节
+        start_chapter_layout = QHBoxLayout()
+        start_chapter_layout.addWidget(QLabel("起始章:"))
+        self.start_chapter_spin = QSpinBox()
+        self.start_chapter_spin.setRange(1, 9999)  # 增加最大值限制
+        self.start_chapter_spin.setValue(1)
+        start_chapter_layout.addWidget(self.start_chapter_spin)
+        range_layout.addLayout(start_chapter_layout)
+
+        # 结束卷号
+        end_volume_layout = QHBoxLayout()
+        end_volume_layout.addWidget(QLabel("结束卷:"))
+        self.end_volume_spin = QSpinBox()
+        self.end_volume_spin.setRange(1, 9999)  # 增加最大值限制
+        self.end_volume_spin.setValue(1)
+        end_volume_layout.addWidget(self.end_volume_spin)
+        range_layout.addLayout(end_volume_layout)
+
+        # 结束章节
+        end_chapter_layout = QHBoxLayout()
+        end_chapter_layout.addWidget(QLabel("结束章:"))
+        self.end_chapter_spin = QSpinBox()
+        self.end_chapter_spin.setRange(1, 9999)  # 增加最大值限制
+        self.end_chapter_spin.setValue(10)
+        end_chapter_layout.addWidget(self.end_chapter_spin)
+        range_layout.addLayout(end_chapter_layout)
+
+        range_group.setLayout(range_layout)
+        right_layout.addWidget(range_group)
 
         # 创建输出区域
         output_group = QGroupBox("生成结果")
@@ -224,14 +290,16 @@ class OutlineTab(QWidget):
         """模板选择事件处理"""
         if index <= 0:  # 第一项是提示文本
             self.edit_template_button.setEnabled(False)
+            self.delete_template_button.setEnabled(False)
             return
 
         template_name = self.template_combo.currentText()
         template = self.prompt_manager.get_template(template_name)
 
         if template:
-            # 启用编辑按钮
+            # 启用编辑和删除按钮
             self.edit_template_button.setEnabled(True)
+            self.delete_template_button.setEnabled(True)
 
             # 显示模板信息
             QMessageBox.information(
@@ -253,8 +321,12 @@ class OutlineTab(QWidget):
             return "custom_openai"
         elif model_text == "modelscope":
             return "modelscope"
+        elif model_text == "ollama":
+            return "ollama"
+        elif model_text == "siliconflow": # 添加 SiliconFlow 处理
+            return "siliconflow"
         else:
-            return "gpt"  # 默认使用GPT
+            return "gpt"  # 默认使用GPT # 保持原来的默认逻辑
 
     def _update_buttons(self, has_outline):
         """更新按钮状态"""
@@ -292,6 +364,22 @@ class OutlineTab(QWidget):
             "synopsis": self.synopsis_edit.toPlainText().strip()
         }
 
+        # 获取生成范围
+        start_volume = self.start_volume_spin.value()
+        start_chapter = self.start_chapter_spin.value()
+        end_volume = self.end_volume_spin.value()
+        end_chapter = self.end_chapter_spin.value()
+
+        # 如果指定了生成范围，则将生成的内容合并到已有大纲中
+        if start_volume and end_volume:
+            # 获取已有大纲
+            existing_outline = self.main_window.get_outline()
+            if existing_outline:
+                # 将生成的卷和章节合并到已有大纲中
+                self._merge_volumes(existing_outline, result, start_volume, start_chapter, end_volume, end_chapter)
+                # 使用合并后的大纲
+                result = existing_outline
+
         # 设置大纲
         self.main_window.set_outline(result)
 
@@ -319,6 +407,192 @@ class OutlineTab(QWidget):
         # 显示错误消息
         QMessageBox.warning(self, "生成失败", f"生成大纲时出错: {error_message}")
 
+    def _merge_volumes(self, existing_outline, new_outline, start_volume, start_chapter, end_volume, end_chapter):
+        """将新生成的卷和章节合并到已有大纲中
+
+        Args:
+            existing_outline: 已有的大纲
+            new_outline: 新生成的大纲
+            start_volume: 起始卷号（从1开始）
+            start_chapter: 起始章节号（从1开始）
+            end_volume: 结束卷号（从1开始）
+            end_chapter: 结束章节号（从1开始）
+        """
+        # 确保已有大纲中有volumes字段
+        if 'volumes' not in existing_outline:
+            existing_outline['volumes'] = []
+
+        # 如果新大纲中没有volumes字段，直接返回
+        if 'volumes' not in new_outline or not new_outline['volumes']:
+            return
+
+        # 遍历新生成的卷
+        for new_volume in new_outline['volumes']:
+            # 提取卷号（从标题中提取数字）
+            volume_title = new_volume.get('title', '')
+            volume_number = 0
+
+            # 尝试从标题中提取卷号
+            import re
+            match = re.search(r'第(\d+)卷', volume_title)
+            if match:
+                volume_number = int(match.group(1))
+
+            # 如果卷号在指定范围内
+            if start_volume <= volume_number <= end_volume:
+                # 检查已有大纲中是否已有该卷
+                existing_volume_index = None
+                for i, vol in enumerate(existing_outline['volumes']):
+                    vol_title = vol.get('title', '')
+                    match = re.search(r'第(\d+)卷', vol_title)
+                    if match and int(match.group(1)) == volume_number:
+                        existing_volume_index = i
+                        break
+
+                # 如果已有该卷，替换或合并章节
+                if existing_volume_index is not None:
+                    # 保留卷标题和简介
+                    existing_outline['volumes'][existing_volume_index]['title'] = new_volume.get('title', existing_outline['volumes'][existing_volume_index]['title'])
+                    existing_outline['volumes'][existing_volume_index]['description'] = new_volume.get('description', existing_outline['volumes'][existing_volume_index]['description'])
+
+                    # 确保章节列表存在
+                    if 'chapters' not in existing_outline['volumes'][existing_volume_index]:
+                        existing_outline['volumes'][existing_volume_index]['chapters'] = []
+
+                    # 如果有新章节
+                    if 'chapters' in new_volume and new_volume['chapters']:
+                        # 遍历新章节
+                        for new_chapter in new_volume['chapters']:
+                            # 提取章节号
+                            chapter_title = new_chapter.get('title', '')
+                            chapter_number = 0
+
+                            match = re.search(r'第(\d+)章', chapter_title)
+                            if match:
+                                chapter_number = int(match.group(1))
+
+                            # 判断章节是否在范围内
+                            in_range = True
+                            if volume_number == start_volume and start_chapter and chapter_number < start_chapter:
+                                in_range = False
+                            if volume_number == end_volume and end_chapter and chapter_number > end_chapter:
+                                in_range = False
+
+                            if in_range:
+                                # 检查是否已有该章节
+                                existing_chapter_index = None
+                                for j, chap in enumerate(existing_outline['volumes'][existing_volume_index]['chapters']):
+                                    chap_title = chap.get('title', '')
+                                    match = re.search(r'第(\d+)章', chap_title)
+                                    if match and int(match.group(1)) == chapter_number:
+                                        existing_chapter_index = j
+                                        break
+
+                                # 如果已有该章节，替换
+                                if existing_chapter_index is not None:
+                                    existing_outline['volumes'][existing_volume_index]['chapters'][existing_chapter_index] = new_chapter
+                                else:
+                                    # 如果没有，添加到适当位置
+                                    # 找到插入位置
+                                    insert_index = 0
+                                    for j, chap in enumerate(existing_outline['volumes'][existing_volume_index]['chapters']):
+                                        chap_title = chap.get('title', '')
+                                        match = re.search(r'第(\d+)章', chap_title)
+                                        if match and int(match.group(1)) < chapter_number:
+                                            insert_index = j + 1
+
+                                    # 插入新章节
+                                    existing_outline['volumes'][existing_volume_index]['chapters'].insert(insert_index, new_chapter)
+                else:
+                    # 如果没有该卷，添加到适当位置
+                    # 找到插入位置
+                    insert_index = 0
+                    for i, vol in enumerate(existing_outline['volumes']):
+                        vol_title = vol.get('title', '')
+                        match = re.search(r'第(\d+)卷', vol_title)
+                        if match and int(match.group(1)) < volume_number:
+                            insert_index = i + 1
+
+                    # 插入新卷
+                    existing_outline['volumes'].insert(insert_index, new_volume)
+
+        # 最终排序卷和章节，确保顺序正确
+        if 'volumes' in existing_outline and existing_outline['volumes']:
+            # 对卷进行排序
+            def get_volume_number(volume):
+                title = volume.get('title', '')
+                match = re.search(r'第(\d+)卷', title)
+                if match:
+                    return int(match.group(1))
+                return 0
+
+            existing_outline['volumes'].sort(key=get_volume_number)
+
+            # 对每个卷的章节进行排序
+            for volume in existing_outline['volumes']:
+                if 'chapters' in volume and volume['chapters']:
+                    def get_chapter_number(chapter):
+                        title = chapter.get('title', '')
+                        match = re.search(r'第(\d+)章', title)
+                        if match:
+                            return int(match.group(1))
+                        return 0
+
+                    volume['chapters'].sort(key=get_chapter_number)
+
+        # 更新其他字段（如果有新内容）
+        if 'title' in new_outline and new_outline['title'] and not existing_outline.get('title'):
+            existing_outline['title'] = new_outline['title']
+        if 'theme' in new_outline and new_outline['theme'] and not existing_outline.get('theme'):
+            existing_outline['theme'] = new_outline['theme']
+        if 'synopsis' in new_outline and new_outline['synopsis'] and not existing_outline.get('synopsis'):
+            existing_outline['synopsis'] = new_outline['synopsis']
+        if 'worldbuilding' in new_outline and new_outline['worldbuilding'] and not existing_outline.get('worldbuilding'):
+            existing_outline['worldbuilding'] = new_outline['worldbuilding']
+
+        # 合并角色数据 - 只添加新生成的角色，不替换已有角色
+        if 'characters' in new_outline and new_outline['characters']:
+            if not existing_outline.get('characters'):
+                # 如果已有大纲中没有角色数据，直接使用新生成的角色数据
+                existing_outline['characters'] = new_outline['characters']
+            else:
+                # 如果已有大纲中已有角色数据，合并新生成的角色数据
+                existing_characters = existing_outline.get('characters', [])
+                new_characters = new_outline.get('characters', [])
+
+                # 获取已有角色的名称列表，用于检查重复
+                existing_names = [char.get('name', '') for char in existing_characters]
+
+                # 添加不重复的新角色
+                for new_char in new_characters:
+                    new_name = new_char.get('name', '')
+                    if new_name and new_name not in existing_names:
+                        existing_characters.append(new_char)
+                        existing_names.append(new_name)
+
+                # 更新角色数据
+                existing_outline['characters'] = existing_characters
+
+    def _select_characters(self):
+        """选择章节出场角色"""
+        # 获取当前小说的所有角色
+        outline = self.main_window.get_outline()
+        if not outline or "characters" not in outline or not outline["characters"]:
+            QMessageBox.warning(self, "提示", "当前小说没有角色数据，请先在人物编辑标签页添加角色。")
+            return
+
+        # 获取所有角色
+        all_characters = outline["characters"]
+
+        # 创建角色选择对话框
+        dialog = CharacterSelectorDialog(self, all_characters, self.selected_characters)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # 获取选中的角色
+            self.selected_characters = dialog.get_selected_characters()
+            # 更新已选择角色数量标签
+            self.character_count_label.setText(f"已选择: {len(self.selected_characters)} 个角色")
+
     def generate_outline(self):
         """生成大纲"""
         # 获取输入
@@ -331,11 +605,9 @@ class OutlineTab(QWidget):
         chapters_per_volume = self.chapters_per_volume_spin.value()
         words_per_chapter = self.words_per_chapter_spin.value()
 
-        # 获取角色数量设置
-        protagonist_count = self.protagonist_count_spin.value()
-        important_count = self.important_count_spin.value()
-        supporting_count = self.supporting_count_spin.value()
-        minor_count = self.minor_count_spin.value()
+        # 获取新的角色设置
+        new_character_count = self.new_character_count_spin.value()
+        selected_characters = self.selected_characters
 
         if not theme:
             QMessageBox.warning(self, "输入错误", "请输入小说主题")
@@ -374,10 +646,20 @@ class OutlineTab(QWidget):
                 # 记录使用模板
                 self.main_window.status_bar_manager.show_message(f"正在使用模板 '{template_name}' 生成大纲...")
 
+        # 获取生成范围
+        start_volume = self.start_volume_spin.value()
+        start_chapter = self.start_chapter_spin.value()
+        end_volume = self.end_volume_spin.value()
+        end_chapter = self.end_chapter_spin.value()
+
+        # 获取已有大纲（如果有）
+        existing_outline = self.main_window.get_outline()
+
         # 创建并启动生成线程
         self.generation_thread = GenerationThread(
             self.outline_generator.generate_outline,
-            (title, genre, theme, style, synopsis, volume_count, chapters_per_volume, words_per_chapter, protagonist_count, important_count, supporting_count, minor_count),
+            (title, genre, theme, style, synopsis, volume_count, chapters_per_volume, words_per_chapter,
+             new_character_count, selected_characters, start_volume, start_chapter, end_volume, end_chapter, existing_outline),
             {"callback": self._stream_callback}
         )
 
@@ -411,6 +693,114 @@ class OutlineTab(QWidget):
 
     # 已移除load_outline方法
     # 这个功能现在由主窗口的工具栏按钮提供
+
+    def _create_new_template(self):
+        """创建新模板"""
+        # 创建编辑对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("创建新模板")
+        dialog.resize(600, 500)
+
+        layout = QVBoxLayout(dialog)
+
+        # 模板名称
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("模板名称:"))
+        name_edit = QLineEdit(f"自定义大纲模板_{len(self.prompt_manager.get_templates_by_category('outline')) + 1}")
+        name_layout.addWidget(name_edit)
+        layout.addLayout(name_layout)
+
+        # 模板描述
+        desc_layout = QHBoxLayout()
+        desc_layout.addWidget(QLabel("模板描述:"))
+        desc_edit = QLineEdit("自定义大纲生成模板")
+        desc_layout.addWidget(desc_edit)
+        layout.addLayout(desc_layout)
+
+        # 模板分类
+        category_layout = QHBoxLayout()
+        category_layout.addWidget(QLabel("模板分类:"))
+        category_edit = QLineEdit("outline")
+        category_edit.setEnabled(False)  # 固定为outline分类
+        category_layout.addWidget(category_edit)
+        layout.addLayout(category_layout)
+
+        # 模板内容
+        content_label = QLabel("模板内容:")
+        layout.addWidget(content_label)
+
+        content_edit = QTextEdit()
+        default_content = """请为我创建一部小说的详细大纲，具体要求如下：
+
+小说标题：[用户输入的标题]
+小说类型：[用户输入的类型]
+主题：[用户输入的主题]
+风格：[用户输入的风格]
+简介：[用户输入的简介]
+
+卷数：[用户设置的卷数] 卷
+每卷章节数：[用户设置的章节数] 章
+每章字数：[用户设置的字数] 字
+
+人物设置：
+新生成角色数量：[用户设置的新生成角色数量] 个
+已选择出场角色：[用户选择的角色数量] 个
+
+生成范围：从第[起始卷]卷第[起始章]章 到 第[结束卷]卷第[结束章]章
+
+请生成以下内容：
+1. 小说标题
+2. 核心主题
+3. 主要人物（包括姓名、身份、性格特点和背景故事）
+4. 故事梗概
+5. 分卷结构（每卷包含标题、简介和具体章节）
+6. 世界观设定
+
+特别要求：
+1. 卷标题必须包含卷号，如"第一卷：卷标题"
+2. 章节标题必须包含章节号，如"第一章：章节标题"
+3. 只生成指定范围内的卷和章节，但保持与已有大纲的一致性
+4. 在生成的内容中充分利用已选择的出场角色
+
+请确保大纲结构完整、逻辑合理，并以JSON格式返回。"""
+        content_edit.setPlainText(default_content)
+        layout.addWidget(content_edit)
+
+        # 按钮
+        button_layout = QHBoxLayout()
+
+        save_button = QPushButton("保存")
+        save_button.clicked.connect(dialog.accept)
+        button_layout.addWidget(save_button)
+
+        cancel_button = QPushButton("取消")
+        cancel_button.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_button)
+
+        layout.addLayout(button_layout)
+
+        # 显示对话框
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            template_name = name_edit.text()
+            template_content = content_edit.toPlainText()
+            template_desc = desc_edit.text()
+
+            # 添加模板
+            success = self.prompt_manager.add_template(
+                template_name,
+                template_content,
+                "outline",
+                template_desc
+            )
+
+            if success:
+                # 添加到下拉框
+                self.template_combo.addItem(template_name)
+                self.template_combo.setCurrentText(template_name)
+
+                QMessageBox.information(self, "保存成功", f"模板 '{template_name}' 已创建")
+            else:
+                QMessageBox.warning(self, "保存失败", f"模板 '{template_name}' 已存在或保存失败")
 
     def _edit_template(self):
         """编辑选中的模板"""
@@ -474,22 +864,43 @@ class OutlineTab(QWidget):
 
         # 显示对话框
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            # 更新模板
-            updated_template = self.prompt_manager.update_template(
-                template.name,
-                name_edit.text(),
+            # 检查名称是否变更
+            new_name = name_edit.text()
+            old_name = template.name
+
+            # 更新模板内容
+            success = self.prompt_manager.update_template(
+                old_name,
                 content_edit.toPlainText(),
-                desc_edit.text(),
-                category_edit.text()
+                category_edit.text(),
+                desc_edit.text()
             )
 
-            if updated_template:
-                # 如果名称变化，需要更新下拉框
-                if updated_template.name != template.name:
-                    current_index = self.template_combo.currentIndex()
-                    self.template_combo.setItemText(current_index, updated_template.name)
+            # 如果名称变更，需要删除旧模板并创建新模板
+            if success and new_name != old_name:
+                # 保存模板内容
+                content = content_edit.toPlainText()
+                category = category_edit.text()
+                description = desc_edit.text()
 
-                QMessageBox.information(self, "保存成功", f"模板 '{updated_template.name}' 已更新")
+                # 删除旧模板
+                self.prompt_manager.delete_template(old_name)
+
+                # 创建新模板
+                self.prompt_manager.add_template(
+                    new_name,
+                    content,
+                    category,
+                    description
+                )
+
+                # 更新下拉框
+                current_index = self.template_combo.currentIndex()
+                self.template_combo.setItemText(current_index, new_name)
+
+                QMessageBox.information(self, "保存成功", f"模板 '{new_name}' 已更新")
+            elif success:
+                QMessageBox.information(self, "保存成功", f"模板 '{old_name}' 已更新")
 
     def _save_as_template(self):
         """保存当前设置为新模板"""
@@ -503,11 +914,15 @@ class OutlineTab(QWidget):
         chapters_per_volume = self.chapters_per_volume_spin.value()
         words_per_chapter = self.words_per_chapter_spin.value()
 
-        # 获取角色数量设置
-        protagonist_count = self.protagonist_count_spin.value()
-        important_count = self.important_count_spin.value()
-        supporting_count = self.supporting_count_spin.value()
-        minor_count = self.minor_count_spin.value()
+        # 获取新的角色设置
+        new_character_count = self.new_character_count_spin.value()
+        selected_characters_count = len(self.selected_characters)
+
+        # 获取生成范围
+        start_volume = self.start_volume_spin.value()
+        start_chapter = self.start_chapter_spin.value()
+        end_volume = self.end_volume_spin.value()
+        end_chapter = self.end_chapter_spin.value()
 
         # 创建模板内容
         template_content = f"""请为我创建一部小说的详细大纲，具体要求如下：
@@ -523,10 +938,10 @@ class OutlineTab(QWidget):
 每章字数：{words_per_chapter} 字
 
 人物设置：
-主角数量：{protagonist_count} 个
-重要角色数量：{important_count} 个
-配角数量：{supporting_count} 个
-龙套数量：{minor_count} 个
+新生成角色数量：{new_character_count} 个
+已选择出场角色：{selected_characters_count} 个
+
+生成范围：从第{start_volume}卷第{start_chapter}章 到 第{end_volume}卷第{end_chapter}章
 
 请生成以下内容：
 1. 小说标题
@@ -537,8 +952,10 @@ class OutlineTab(QWidget):
 6. 世界观设定
 
 特别要求：
-1. 卷标题必须包含卷号，如“第一卷：卷标题”
-2. 章节标题必须包含章节号，如“第一章：章节标题”
+1. 卷标题必须包含卷号，如"第一卷：卷标题"
+2. 章节标题必须包含章节号，如"第一章：章节标题"
+3. 只生成指定范围内的卷和章节，但保持与已有大纲的一致性
+4. 在生成的内容中充分利用已选择的出场角色
 
 请确保大纲结构完整、逻辑合理，并以JSON格式返回。"""
 
@@ -557,16 +974,51 @@ class OutlineTab(QWidget):
 
             if ok:
                 # 添加模板
-                new_template = self.prompt_manager.add_template(
+                success = self.prompt_manager.add_template(
                     template_name,
                     template_content,
-                    template_desc,
-                    "outline"
+                    "outline",
+                    template_desc
                 )
 
-                if new_template:
+                if success:
                     # 添加到下拉框
-                    self.template_combo.addItem(new_template.name)
-                    self.template_combo.setCurrentText(new_template.name)
+                    self.template_combo.addItem(template_name)
+                    self.template_combo.setCurrentText(template_name)
 
-                    QMessageBox.information(self, "保存成功", f"模板 '{new_template.name}' 已保存")
+                    QMessageBox.information(self, "保存成功", f"模板 '{template_name}' 已保存")
+                else:
+                    QMessageBox.warning(self, "保存失败", f"模板 '{template_name}' 已存在或保存失败")
+
+    def _delete_template(self):
+        """删除当前选中的模板"""
+        if self.template_combo.currentIndex() <= 0:
+            return
+
+        template_name = self.template_combo.currentText()
+
+        # 确认删除
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定要删除模板 '{template_name}' 吗？此操作不可撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # 删除模板
+            success = self.prompt_manager.delete_template(template_name)
+
+            if success:
+                # 从下拉框中移除
+                current_index = self.template_combo.currentIndex()
+                self.template_combo.removeItem(current_index)
+
+                # 禁用编辑和删除按钮
+                self.edit_template_button.setEnabled(False)
+                self.delete_template_button.setEnabled(False)
+
+                QMessageBox.information(self, "删除成功", f"模板 '{template_name}' 已删除")
+            else:
+                QMessageBox.warning(self, "删除失败", f"模板 '{template_name}' 删除失败")

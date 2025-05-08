@@ -17,6 +17,8 @@ from PyQt6.QtGui import QFont, QFontDatabase
 from qasync import QEventLoop, QApplication as QAsyncApplication
 from ui.main_window import MainWindow
 from ui.components import ThemeManager
+from ui.styles import get_style
+from ui.app_icon import set_app_icon
 
 async def main():
     """主函数"""
@@ -31,6 +33,12 @@ async def main():
 
     # 设置应用程序样式
     app.setStyle("Fusion")
+
+    # 应用默认样式表
+    app.setStyleSheet(get_style("light"))
+
+    # 设置应用程序图标
+    set_app_icon(app)
 
     # 创建事件循环
     loop = QEventLoop(app)

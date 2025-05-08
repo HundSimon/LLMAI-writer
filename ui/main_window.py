@@ -8,6 +8,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QFontDatabase, QIcon, QKeySequence, QAction
 from PyQt6.QtCore import Qt, QSize
 
+from ui.icons import get_new_icon, get_open_icon, get_save_icon, get_stats_icon, get_theme_icon, get_help_icon, get_about_icon
+from ui.app_icon import set_app_icon
+
 from utils.config_manager import ConfigManager
 from utils.data_manager import NovelDataManager
 from utils.prompt_manager import PromptManager
@@ -17,6 +20,8 @@ from models.claude_model import ClaudeModel
 from models.gemini_model import GeminiModel
 from models.custom_openai_model import CustomOpenAIModel
 from models.modelscope_model import ModelScopeModel
+from models.ollama_model import OllamaModel
+from models.siliconflow_model import SiliconFlowModel # 导入 SiliconFlow 模型
 
 from ui.components import ThemeManager, StatusBarManager, KeyboardShortcutManager
 from ui.outline_tab import OutlineTab
@@ -24,6 +29,7 @@ from ui.outline_edit_tab import OutlineEditTab
 from ui.chapter_outline_tab import ChapterOutlineTab
 from ui.chapter_tab import ChapterTab
 from ui.character_tab import CharacterTab
+from ui.character_relationship_tab import CharacterRelationshipTab 
 from ui.chapter_analysis_tab import ChapterAnalysisTab
 from ui.statistics_tab import StatisticsTab
 from ui.settings_tab import SettingsTab
@@ -35,7 +41,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # 设置窗口标题和大小
-        self.setWindowTitle("AI小说生成器")
+        self.setWindowTitle("AI小说生成器 v0.76")
         self.resize(1200, 800)
 
         # 加载配置
@@ -80,8 +86,8 @@ class MainWindow(QMainWindow):
         if os.path.exists(font_path):
             font_id = QFontDatabase.addApplicationFont(font_path)
             if font_id != -1:
-                font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-                self.font = QFont(font_family, 10)
+                # 直接使用字体文件名作为字体名
+                self.font = QFont("SourceHanSansCN-Normal", 10)
                 QApplication.setFont(self.font)
             else:
                 print("无法加载字体文件")
@@ -105,6 +111,7 @@ class MainWindow(QMainWindow):
 
         # 创建标签页
         self.tab_widget = QTabWidget()
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)  # 连接标签页切换事件
         main_layout.addWidget(self.tab_widget)
 
         # 创建各个标签页
@@ -113,6 +120,7 @@ class MainWindow(QMainWindow):
         self.chapter_outline_tab = ChapterOutlineTab(self)
         self.chapter_tab = ChapterTab(self)
         self.character_tab = CharacterTab(self)
+        self.character_relationship_tab = CharacterRelationshipTab(self) 
         self.chapter_analysis_tab = ChapterAnalysisTab(self)
         self.statistics_tab = StatisticsTab(self)
         self.settings_tab = SettingsTab(self)
@@ -123,6 +131,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.chapter_outline_tab, "章节大纲编辑")
         self.tab_widget.addTab(self.chapter_tab, "章节生成")
         self.tab_widget.addTab(self.character_tab, "人物编辑")
+        self.tab_widget.addTab(self.character_relationship_tab, "人物关系图") 
         self.tab_widget.addTab(self.chapter_analysis_tab, "章节分析")
         self.tab_widget.addTab(self.statistics_tab, "统计信息")
         self.tab_widget.addTab(self.settings_tab, "设置")
@@ -159,6 +168,20 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"自定义OpenAI模型初始化失败: {e}")
 
+        # 初始化多个自定义OpenAI模型
+        self.custom_openai_models = {}
+        if self.config_manager.is_custom_openai_models_enabled():
+            models = self.config_manager.get_custom_openai_models()
+            for model_config in models:
+                try:
+                    model_name = model_config.get('name')
+                    if model_name:
+                        model = CustomOpenAIModel(self.config_manager, model_config)
+                        self.custom_openai_models[model_name] = model
+                        print(f"初始化自定义模型: {model_name}")
+                except Exception as e:
+                    print(f"自定义模型 '{model_config.get('name', '未命名')}' 初始化失败: {e}")
+
         # 初始化ModelScope API
         self.has_modelscope = False
         if self.config_manager.is_modelscope_enabled():
@@ -168,8 +191,27 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"ModelScope模型初始化失败: {e}")
 
+        # 初始化Ollama API
+        self.has_ollama = False
+        if self.config_manager.is_ollama_enabled():
+            try:
+                self.ollama_model = OllamaModel(self.config_manager)
+                self.has_ollama = True
+            except Exception as e:
+                print(f"Ollama模型初始化失败: {e}")
+
+        # 初始化 SiliconFlow API
+        self.has_siliconflow = False
+        # 检查配置中是否有 siliconflow_api_key 来决定是否启用
+        if self.config_manager.get_api_key('siliconflow'):
+            try:
+                self.siliconflow_model = SiliconFlowModel(self.config_manager)
+                self.has_siliconflow = True
+            except Exception as e:
+                print(f"SiliconFlow模型初始化失败: {e}")
+
         # 检查是否至少有一个模型可用
-        if not any([self.has_gpt, self.has_claude, self.has_gemini, self.has_custom_openai, self.has_modelscope]):
+        if not any([self.has_gpt, self.has_claude, self.has_gemini, self.has_custom_openai, self.has_modelscope, self.has_ollama, self.has_siliconflow, bool(self.custom_openai_models)]):
             QMessageBox.warning(
                 self,
                 "模型初始化失败",
@@ -178,6 +220,11 @@ class MainWindow(QMainWindow):
 
     def get_model(self, model_type):
         """获取指定类型的模型"""
+        # 检查是否是自定义模型
+        if model_type in self.custom_openai_models:
+            return self.custom_openai_models[model_type]
+
+        # 检查标准模型
         if model_type == "gpt" and self.has_gpt:
             return self.gpt_model
         elif model_type == "claude" and self.has_claude:
@@ -188,63 +235,67 @@ class MainWindow(QMainWindow):
             return self.custom_openai_model
         elif model_type == "modelscope" and self.has_modelscope:
             return self.modelscope_model
-        else:
-            # 返回第一个可用的模型
-            if self.has_gpt:
-                return self.gpt_model
-            elif self.has_claude:
-                return self.claude_model
-            elif self.has_gemini:
-                return self.gemini_model
-            elif self.has_custom_openai:
-                return self.custom_openai_model
-            elif self.has_modelscope:
-                return self.modelscope_model
+        elif model_type == "ollama" and self.has_ollama:
+            return self.ollama_model
+        elif model_type == "siliconflow":
+            if self.has_siliconflow:
+                return self.siliconflow_model
             else:
-                raise ValueError("没有可用的AI模型")
+                # 如果请求了 SiliconFlow 但它不可用（通常是缺少API Key），则明确报错
+                raise ValueError("SiliconFlow模型未配置或初始化失败 (请检查config.ini中的API Key)")
+        else:
+            # 如果模型类型字符串本身就不认识
+             raise ValueError(f"未知的模型类型: {model_type}")
 
     def _create_toolbar(self):
         """创建工具栏"""
         # 创建主工具栏
         toolbar = QToolBar("Main Toolbar")
         toolbar.setIconSize(QSize(24, 24))
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)  # 显示图标和文本
         self.addToolBar(toolbar)
 
         # 文件操作
-        new_action = QAction("新建", self)
+        new_action = QAction(get_new_icon(), "新建", self)
         new_action.setShortcut(QKeySequence.StandardKey.New)
         new_action.triggered.connect(self.new_novel)
         toolbar.addAction(new_action)
 
-        open_action = QAction("打开", self)
+        open_action = QAction(get_open_icon(), "打开", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self.load_novel)
         toolbar.addAction(open_action)
 
-        save_action = QAction("保存", self)
+        save_action = QAction(get_save_icon(), "保存", self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self.save_novel)
+        save_action.setProperty("primary", True)  # 设置为主要按钮
         toolbar.addAction(save_action)
 
         toolbar.addSeparator()
 
         # 统计
-        stats_action = QAction("统计信息", self)
+        stats_action = QAction(get_stats_icon(), "统计信息", self)
         stats_action.setShortcut(QKeySequence("Ctrl+I"))
         stats_action.triggered.connect(self.show_statistics)
         toolbar.addAction(stats_action)
 
         # 主题切换
-        theme_action = QAction("切换主题", self)
+        theme_action = QAction(get_theme_icon(), "切换主题", self)
         theme_action.setShortcut(QKeySequence("Ctrl+T"))
         theme_action.triggered.connect(self.toggle_theme)
         toolbar.addAction(theme_action)
 
         # 帮助
-        help_action = QAction("帮助", self)
+        help_action = QAction(get_help_icon(), "帮助", self)
         help_action.setShortcut(QKeySequence.StandardKey.HelpContents)
         help_action.triggered.connect(self.show_help)
         toolbar.addAction(help_action)
+
+        # 关于
+        about_action = QAction(get_about_icon(), "关于", self)
+        about_action.triggered.connect(self.show_about)
+        toolbar.addAction(about_action)
 
     def toggle_theme(self):
         """切换主题"""
@@ -277,6 +328,18 @@ class MainWindow(QMainWindow):
             self,
             "快捷键帮助",
             f"可用的快捷键:\n\n{shortcut_text}"
+        )
+
+    def show_about(self):
+        """显示关于信息"""
+        # 显示作者信息
+        QMessageBox.information(
+            self,
+            "关于作者",
+            "作者：你算啥呢呀？\n\n"
+            "仓库地址：https://github.com/WhatRUHuh/LLMAI-writer\n\n"
+            "B站主页：https://space.bilibili.com/586587271\n\n"
+            "声明：本项目免费开源，如果你是花钱买的说明你被坑了"
         )
 
     def new_novel(self):
@@ -314,6 +377,8 @@ class MainWindow(QMainWindow):
         self.character_tab.update_characters()
         # 更新章节分析标签页
         self.chapter_analysis_tab.set_outline(outline)
+        # 更新人物关系图标签页 
+        self.character_relationship_tab.set_outline(outline)
         # 更新统计标签页
         self.statistics_tab.update_statistics()
 
@@ -328,6 +393,93 @@ class MainWindow(QMainWindow):
     def get_chapter(self, volume_index, chapter_index):
         """获取章节内容"""
         return self.data_manager.get_chapter(volume_index, chapter_index)
+
+    def _on_tab_changed(self, index):
+        """处理标签页切换事件
+
+        在切换标签页时自动保存当前标签页的内容
+
+        Args:
+            index: 新标签页的索引
+        """
+        # 获取当前标签页
+        current_tab = self.tab_widget.currentWidget()
+
+        # 根据标签页类型执行不同的保存操作
+        if current_tab == self.outline_edit_tab:
+            # 自动保存总大纲编辑页面的内容
+            try:
+                # 调用保存方法，但不显示消息框
+                if hasattr(self.outline_edit_tab, 'outline') and self.outline_edit_tab.outline:
+                    # 更新大纲数据
+                    self.outline_edit_tab.outline["title"] = self.outline_edit_tab.title_edit.text()
+                    self.outline_edit_tab.outline["theme"] = self.outline_edit_tab.theme_edit.toPlainText()
+                    self.outline_edit_tab.outline["synopsis"] = self.outline_edit_tab.synopsis_edit.toPlainText()
+                    self.outline_edit_tab.outline["worldbuilding"] = self.outline_edit_tab.world_edit.toPlainText()
+
+                    # 保存大纲
+                    self.set_outline(self.outline_edit_tab.outline)
+                    self.status_bar_manager.show_message("总大纲已自动保存")
+            except Exception as e:
+                print(f"自动保存总大纲时出错: {e}")
+
+        elif current_tab == self.chapter_outline_tab:
+            # 自动保存章节大纲编辑页面的内容
+            try:
+                # 调用保存方法，但不显示消息框
+                if hasattr(self.chapter_outline_tab, 'outline') and self.chapter_outline_tab.outline:
+                    # 保存当前编辑的卷和章节
+                    if self.chapter_outline_tab.current_volume_index >= 0:
+                        volumes = self.chapter_outline_tab.outline.get("volumes", [])
+                        if self.chapter_outline_tab.current_volume_index < len(volumes):
+                            volume = volumes[self.chapter_outline_tab.current_volume_index]
+                            volume["title"] = self.chapter_outline_tab.volume_title_edit.text()
+                            # 更新description字段作为卷简介
+                            volume["description"] = self.chapter_outline_tab.volume_intro_edit.toPlainText()
+
+                            if self.chapter_outline_tab.current_chapter_index >= 0:
+                                chapters = volume.get("chapters", [])
+                                if self.chapter_outline_tab.current_chapter_index < len(chapters):
+                                    chapter = chapters[self.chapter_outline_tab.current_chapter_index]
+                                    chapter["title"] = self.chapter_outline_tab.chapter_title_edit.text()
+                                    chapter["summary"] = self.chapter_outline_tab.chapter_summary_edit.toPlainText()
+
+                    # 保存大纲
+                    self.set_outline(self.chapter_outline_tab.outline)
+                    self.status_bar_manager.show_message("章节大纲已自动保存")
+            except Exception as e:
+                print(f"自动保存章节大纲时出错: {e}")
+
+        elif current_tab == self.chapter_tab:
+            # 自动保存章节内容
+            try:
+                if self.chapter_tab.current_volume_index >= 0 and self.chapter_tab.current_chapter_index >= 0:
+                    # 获取章节内容
+                    content = self.chapter_tab.output_edit.toPlainText()
+                    if content:
+                        # 保存章节内容
+                        self.set_chapter(self.chapter_tab.current_volume_index, self.chapter_tab.current_chapter_index, content)
+                        self.status_bar_manager.show_message("章节内容已自动保存")
+            except Exception as e:
+                print(f"自动保存章节内容时出错: {e}")
+
+        elif current_tab == self.character_tab:
+            # 自动保存人物数据
+            try:
+                if hasattr(self.character_tab, '_save_characters'):
+                    self.character_tab._save_characters()
+                    self.status_bar_manager.show_message("人物数据已自动保存")
+            except Exception as e:
+                print(f"自动保存人物数据时出错: {e}")
+
+        elif current_tab == self.character_relationship_tab: 
+            # 自动保存人物关系数据
+            try:
+                if hasattr(self.character_relationship_tab, 'save_relationships_to_data'):
+                    self.character_relationship_tab.save_relationships_to_data()
+                    self.status_bar_manager.show_message("人物关系数据已自动保存")
+            except Exception as e:
+                print(f"自动保存人物关系数据时出错: {e}")
 
     def save_novel(self):
         """保存小说"""
@@ -452,6 +604,13 @@ def run_app():
 
     # 设置应用程序样式
     app.setStyle("Fusion")
+
+    # 应用默认样式表
+    from ui.styles import get_style
+    app.setStyleSheet(get_style("light"))
+
+    # 设置应用程序图标
+    set_app_icon(app)
 
     # 创建主窗口
     window = MainWindow()

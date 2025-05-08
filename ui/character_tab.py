@@ -35,7 +35,11 @@ class CharacterDetailDialog(QDialog):
         self.identity_edit = QLineEdit(self.character.get("identity", ""))
         basic_layout.addRow("身份:", self.identity_edit)
 
-        self.age_edit = QLineEdit(self.character.get("age", ""))
+        # 确保年龄是字符串类型
+        age_value = self.character.get("age", "")
+        if isinstance(age_value, int):
+            age_value = str(age_value)
+        self.age_edit = QLineEdit(age_value)
         basic_layout.addRow("年龄:", self.age_edit)
 
         self.gender_combo = QComboBox()
@@ -171,7 +175,8 @@ class CharacterTab(QWidget):
         ai_button_layout.addWidget(self.generate_button)
 
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["GPT", "Claude", "Gemini", "自定义OpenAI", "ModelScope"])
+        # 添加 SiliconFlow 到硬编码列表
+        self.model_combo.addItems(["GPT", "Claude", "Gemini", "自定义OpenAI", "ModelScope", "Ollama", "SiliconFlow"])
         ai_button_layout.addWidget(self.model_combo)
 
         character_layout.addLayout(ai_button_layout)
@@ -468,8 +473,25 @@ class CharacterTab(QWidget):
             model_type = "custom_openai"
         elif model_text == "modelscope":
             model_type = "modelscope"
+        elif model_text == "ollama":
+            model_type = "ollama"
+        elif model_text == "siliconflow": # 添加 SiliconFlow 处理
+            model_type = "siliconflow"
+        elif model_text in self.main_window.custom_openai_models: # 处理多个自定义模型
+             model_type = model_text # 直接返回模型名称作为类型
         else:
-            model_type = "gpt"  # 默认使用GPT
+            # 如果列表为空或选中的不在已知类型中，尝试返回第一个可用的
+            if self.main_window.has_gpt: model_type = "gpt"
+            elif self.main_window.has_claude: model_type = "claude"
+            elif self.main_window.has_gemini: model_type = "gemini"
+            elif self.main_window.has_custom_openai: model_type = "custom_openai"
+            elif self.main_window.has_modelscope: model_type = "modelscope"
+            elif self.main_window.has_ollama: model_type = "ollama"
+            elif self.main_window.has_siliconflow: model_type = "siliconflow"
+            elif self.main_window.custom_openai_models: model_type = list(self.main_window.custom_openai_models.keys())[0]
+            else:
+                 QMessageBox.warning(self, "模型错误", "没有可用的AI模型")
+                 return # 没有可用模型，直接返回
 
         try:
             model = self.main_window.get_model(model_type)

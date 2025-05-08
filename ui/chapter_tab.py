@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
-    QPushButton, QComboBox, QGroupBox, QFormLayout,
+    QPushButton, QComboBox, QGroupBox, QFormLayout, QLineEdit, QLabel,
     QMessageBox, QSplitter, QListWidget, QListWidgetItem,
     QDialog
 )
@@ -22,6 +22,8 @@ class ChapterTab(QWidget):
         self.current_volume_index = -1
         self.current_chapter_index = -1
 
+        self.selected_characters_for_chapter = [] # 用于存储当前章节选定的角色
+
         # 初始化UI
         self._init_ui()
 
@@ -38,18 +40,7 @@ class ChapterTab(QWidget):
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
 
-        # 创建模型选择组
-        model_group = QGroupBox("模型选择")
-        model_layout = QFormLayout()
-
-        self.model_combo = QComboBox()
-        self.model_combo.addItems(["GPT", "Claude", "Gemini", "自定义OpenAI", "ModelScope"])
-        model_layout.addRow("AI模型:", self.model_combo)
-
-        model_group.setLayout(model_layout)
-        left_layout.addWidget(model_group)
-
-        # 创建卷选择组
+        # 创建卷选择组 (删除了之前的模型选择组)
         volume_group = QGroupBox("卷选择")
         volume_layout = QVBoxLayout()
 
@@ -78,6 +69,7 @@ class ChapterTab(QWidget):
         # 生成章节按钮已移除，使用AI辅助编辑按钮替代
 
         self.save_button = QPushButton("保存章节")
+        self.save_button.setProperty("primary", True)  # 设置为主要按钮
         self.save_button.clicked.connect(self.save_chapter)
         self.save_button.setEnabled(False)
         button_layout.addWidget(self.save_button)
@@ -109,14 +101,42 @@ class ChapterTab(QWidget):
         output_layout = QVBoxLayout()
 
         self.output_edit = QTextEdit()
+        # 连接信号，以便在选择文本时启用/禁用润色按钮
+        self.output_edit.selectionChanged.connect(self._update_polish_button_state)
         output_layout.addWidget(self.output_edit)
 
-        # 添加AI生成按钮
+        # 添加AI生成按钮和选择角色按钮
         ai_button_layout = QHBoxLayout()
+
+        # 添加选择角色按钮
+        self.select_characters_button = QPushButton("选择角色")
+        self.select_characters_button.clicked.connect(self._select_characters)
+        self.select_characters_button.setEnabled(False) # 初始禁用
+        ai_button_layout.addWidget(self.select_characters_button)
+
+        # 添加字数输入框和确认按钮
+        ai_button_layout.addWidget(QLabel("目标字数:"))
+        self.word_count_input = QLineEdit()
+        self.word_count_input.setPlaceholderText("选填")
+        self.word_count_input.setFixedWidth(60) # 固定宽度
+        ai_button_layout.addWidget(self.word_count_input)
+        # 确认按钮暂时不需要，直接在生成时读取输入框内容
+        # self.confirm_word_count_button = QPushButton("确认字数")
+        # self.confirm_word_count_button.clicked.connect(self._confirm_word_count) # 需要实现 _confirm_word_count 方法
+        # ai_button_layout.addWidget(self.confirm_word_count_button)
+
         self.ai_generate_button = QPushButton("AI辅助编辑")
         self.ai_generate_button.clicked.connect(self._generate_with_ai)
         self.ai_generate_button.setEnabled(False)
         ai_button_layout.addWidget(self.ai_generate_button)
+
+        # 添加选定文本润色按钮
+        self.polish_button = QPushButton("选定文本润色")
+        self.polish_button.clicked.connect(self._polish_selected_text)
+        self.polish_button.setEnabled(False) # 初始禁用
+        ai_button_layout.addWidget(self.polish_button)
+
+
         ai_button_layout.addStretch()
         output_layout.addLayout(ai_button_layout)
 
@@ -195,27 +215,56 @@ class ChapterTab(QWidget):
 
                 # 生成按钮已移除
 
-                # 启用AI辅助编辑按钮
+                # 启用AI辅助编辑按钮和选择角色按钮
                 self.ai_generate_button.setEnabled(True)
+                self.select_characters_button.setEnabled(True)
 
                 # 如果有内容，启用保存按钮
                 self.save_button.setEnabled(bool(self.output_edit.toPlainText()))
+                # 更新润色按钮状态
+                self._update_polish_button_state()
 
-    def _get_model_type(self):
-        """获取选择的模型类型"""
-        model_text = self.model_combo.currentText().lower()
-        if model_text == "gpt":
-            return "gpt"
-        elif model_text == "claude":
-            return "claude"
-        elif model_text == "gemini":
-            return "gemini"
-        elif model_text == "自定义openai":
-            return "custom_openai"
-        elif model_text == "modelscope":
-            return "modelscope"
-        else:
-            return "gpt"  # 默认使用GPT
+
+    def _update_polish_button_state(self):
+        """根据是否有选中文本更新润色按钮状态"""
+        has_selection = self.output_edit.textCursor().hasSelection()
+        # 只有在章节被选中且有文本被选中时才启用
+        can_polish = self.current_volume_index >= 0 and self.current_chapter_index >= 0 and has_selection
+        self.polish_button.setEnabled(can_polish)
+
+
+    # _get_model_type 方法已不再需要，因为模型选择在 AIGenerateDialog 中进行
+    # 因此整个函数都被注释掉了
+    # def _get_model_type(self):
+    #     """获取选择的模型类型"""
+    #     # model_text = self.model_combo.currentText().lower() # 这行代码引用了已删除的 model_combo，需要删除
+    #     if model_text == "gpt":
+    #         return "gpt"
+    #     elif model_text == "claude":
+    #         return "claude"
+    #     elif model_text == "gemini":
+    #         return "gemini"
+    #     elif model_text == "自定义openai":
+    #         return "custom_openai"
+    #     elif model_text == "modelscope":
+    #         return "modelscope"
+    #     elif model_text == "ollama":
+    #          return "ollama"
+    #     elif model_text == "siliconflow": # 添加 SiliconFlow 处理
+    #          return "siliconflow"
+    #     elif model_text in self.main_window.custom_openai_models: # 处理多个自定义模型
+    #          return model_text # 直接返回模型名称作为类型
+    #     else:
+    #         # 如果列表为空或选中的不在已知类型中，尝试返回第一个可用的
+    #         if self.main_window.has_gpt: return "gpt"
+    #         if self.main_window.has_claude: return "claude"
+    #         if self.main_window.has_gemini: return "gemini"
+    #         if self.main_window.has_custom_openai: return "custom_openai"
+    #         if self.main_window.has_modelscope: return "modelscope"
+    #         if self.main_window.has_ollama: return "ollama"
+    #         if self.main_window.has_siliconflow: return "siliconflow"
+    #         if self.main_window.custom_openai_models: return list(self.main_window.custom_openai_models.keys())[0]
+    #         raise ValueError("没有可用的AI模型") # 如果真的一个都没有
 
     def _stream_callback(self, chunk):
         """流式生成回调函数"""
@@ -228,26 +277,79 @@ class ChapterTab(QWidget):
 
     # generate_chapter 方法已移除，使用 _generate_with_ai 方法替代
 
-    def save_chapter(self):
-        """保存章节"""
+    def save_chapter(self, show_message=True):
+        """保存章节
+
+        Args:
+            show_message: 是否显示消息对话框
+        """
         if self.current_volume_index < 0 or self.current_chapter_index < 0:
-            QMessageBox.warning(self, "保存失败", "请先选择一个章节")
+            if show_message:
+                QMessageBox.warning(self, "保存失败", "请先选择一个章节")
             return
 
         # 获取章节内容
         content = self.output_edit.toPlainText()
         if not content:
-            QMessageBox.warning(self, "保存失败", "章节内容为空")
+            if show_message:
+                QMessageBox.warning(self, "保存失败", "章节内容为空")
             return
 
         # 保存章节内容
         self.main_window.set_chapter(self.current_volume_index, self.current_chapter_index, content)
 
         # 显示成功消息
-        QMessageBox.information(self, "保存成功", "章节已保存")
+        if show_message:
+            QMessageBox.information(self, "保存成功", "章节已保存")
 
         # 启用保存按钮
         self.save_button.setEnabled(True)
+
+    def _select_characters(self):
+        """选择章节出场角色"""
+        if self.current_volume_index < 0 or self.current_chapter_index < 0:
+            QMessageBox.warning(self, "提示", "请先选择一个章节")
+            return
+
+        if not self.outline or "characters" not in self.outline or not self.outline["characters"]:
+            QMessageBox.warning(self, "提示", "当前小说没有角色数据，请先在人物编辑标签页添加角色。")
+            return
+
+        # 获取当前章节的已选角色（如果有）
+        # selected_characters = [] # 不再需要局部变量
+        volumes = self.outline.get("volumes", [])
+        if self.current_volume_index < len(volumes):
+            volume = volumes[self.current_volume_index]
+            chapters = volume.get("chapters", [])
+            if self.current_chapter_index < len(chapters):
+                chapter = chapters[self.current_chapter_index]
+                self.selected_characters_for_chapter = chapter.get("characters", []) # 加载已选角色到成员变量
+
+        # 获取所有角色
+        all_characters = self.outline["characters"]
+
+        # 创建角色选择对话框
+        from ui.character_selector_dialog import CharacterSelectorDialog
+        # 传入已选角色
+        dialog = CharacterSelectorDialog(self, all_characters, self.selected_characters_for_chapter)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # 获取选中的角色
+            self.selected_characters_for_chapter = dialog.get_selected_characters()
+
+            # 保存选中的角色到当前章节的 outline 数据中
+            volumes = self.outline.get("volumes", [])
+            if self.current_volume_index < len(volumes):
+                volume = volumes[self.current_volume_index]
+                chapters = volume.get("chapters", [])
+                if self.current_chapter_index < len(chapters):
+                    chapter = chapters[self.current_chapter_index]
+                    # 将选中的角色名字列表存入 chapter 字典
+                    chapter["characters"] = self.selected_characters_for_chapter
+
+                    # 更新大纲
+                    self.main_window.set_outline(self.outline)
+                    self.main_window.status_bar_manager.show_message(f"已为章节设置{len(self.selected_characters_for_chapter)}个出场角色")
 
     def _generate_with_ai(self):
         """使用AI生成内容"""
@@ -278,6 +380,11 @@ class ChapterTab(QWidget):
                 chapter = chapters[self.current_chapter_index]
                 context_info["chapter_title"] = chapter.get("title", "")
                 context_info["chapter_number"] = self.current_chapter_index + 1
+
+                # 添加章节出场角色信息 (使用 self.selected_characters_for_chapter)
+                # chapter_characters = chapter.get("characters", []) # 从 outline 获取
+                if self.selected_characters_for_chapter:
+                    context_info["chapter_characters"] = self.selected_characters_for_chapter
 
                 # 添加前10章的标题和摘要
                 previous_chapters = []
@@ -314,15 +421,27 @@ class ChapterTab(QWidget):
         current_text = self.output_edit.toPlainText()
         chapter_info = self.info_edit.toPlainText()
 
+        # 获取目标字数
+        target_word_count_str = self.word_count_input.text().strip()
+        target_word_count = None
+        if target_word_count_str.isdigit():
+            target_word_count = int(target_word_count_str)
+        elif target_word_count_str: # 如果输入了但不是数字，给个提示
+             QMessageBox.warning(self, "提示", "目标字数请输入有效的数字。")
+             # 可以选择在这里 return，或者继续生成但不带字数要求
+
         dialog = AIGenerateDialog(
             self,
             "AI生成章节内容",
             "章节内容",
             current_text,
-            models=["GPT", "Claude", "Gemini", "自定义OpenAI", "ModelScope"],
-            default_model="GPT",
+            # 添加 SiliconFlow 到硬编码列表
+            models=["GPT", "Claude", "Gemini", "自定义OpenAI", "ModelScope", "Ollama", "SiliconFlow"],
+            # default_model="GPT", # 不再需要传递默认模型，让对话框自己处理
             outline_info=outline_info,
-            context_info=context_info
+            context_info=context_info,
+            prompt_manager=self.main_window.prompt_manager,
+            target_word_count=target_word_count # 传递目标字数
         )
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -330,3 +449,108 @@ class ChapterTab(QWidget):
             if result:
                 self.output_edit.setPlainText(result)
                 self.save_button.setEnabled(True)
+                # 在使用AI生成结果后自动保存
+                self.save_chapter(show_message=False)
+                # 显示状态栏消息
+                self.main_window.status_bar_manager.show_message("已使用AI生成结果并保存")
+
+
+    def _polish_selected_text(self):
+        """使用AI润色选定的文本"""
+        if self.current_volume_index < 0 or self.current_chapter_index < 0:
+            QMessageBox.warning(self, "润色失败", "请先选择一个章节")
+            return
+
+        cursor = self.output_edit.textCursor()
+        if not cursor.hasSelection():
+            QMessageBox.warning(self, "润色失败", "请先在章节内容中选定需要润色的文本")
+            return
+
+        selected_text = cursor.selectedText()
+        full_text = self.output_edit.toPlainText()
+
+        # 获取总大纲信息 (与 _generate_with_ai 类似)
+        outline_info = {}
+        if self.outline:
+            outline_info = {
+                "title": self.outline.get("title", ""),
+                "theme": self.outline.get("theme", ""),
+                "synopsis": self.outline.get("synopsis", ""),
+                "worldbuilding": self.outline.get("worldbuilding", "")
+            }
+
+        # 获取上下文信息 (与 _generate_with_ai 类似)
+        context_info = {}
+        volumes = self.outline.get("volumes", [])
+        if self.current_volume_index < len(volumes):
+            volume = volumes[self.current_volume_index]
+            context_info["volume_title"] = volume.get("title", "")
+            context_info["volume_description"] = volume.get("description", "")
+
+            chapters = volume.get("chapters", [])
+            if self.current_chapter_index < len(chapters):
+                chapter = chapters[self.current_chapter_index]
+                context_info["chapter_title"] = chapter.get("title", "")
+                context_info["chapter_number"] = self.current_chapter_index + 1 # 修正变量名
+                # 使用 self.selected_characters_for_chapter
+                if self.selected_characters_for_chapter:
+                    context_info["chapter_characters"] = self.selected_characters_for_chapter
+                previous_chapters = []
+                start_idx = max(0, self.current_chapter_index - 10)
+                for i in range(start_idx, self.current_chapter_index):
+                    if i < len(chapters):
+                        prev_chapter = chapters[i]
+                        previous_chapters.append({"title": prev_chapter.get("title", ""),"summary": prev_chapter.get("summary", "")})
+                context_info["previous_chapters"] = previous_chapters
+                if self.current_chapter_index > 0:
+                    prev_chapter_index = self.current_chapter_index - 1
+                    prev_chapter_content = self.main_window.get_chapter(self.current_volume_index, prev_chapter_index)
+                    if prev_chapter_content:
+                        context_info["previous_chapter_content"] = prev_chapter_content
+                next_chapters = []
+                end_idx = min(len(chapters), self.current_chapter_index + 4)
+                for i in range(self.current_chapter_index + 1, end_idx):
+                     if i < len(chapters):
+                        next_chapter = chapters[i]
+                        next_chapters.append({"title": next_chapter.get("title", ""),"summary": next_chapter.get("summary", "")})
+                context_info["next_chapters"] = next_chapters
+
+
+        # 获取目标字数 (润色时也可能需要，虽然通常润色不限制字数，但保留逻辑)
+        target_word_count_str = self.word_count_input.text().strip()
+        target_word_count = None
+        if target_word_count_str.isdigit():
+            target_word_count = int(target_word_count_str)
+        elif target_word_count_str:
+             QMessageBox.warning(self, "提示", "目标字数请输入有效的数字。")
+
+
+        # 调用修改后的 AIGenerateDialog
+        dialog = AIGenerateDialog(
+            self,
+            "AI文本润色",
+            "润色结果",
+            "", # 初始文本为空，因为我们要在prompt里提供上下文
+            models=["GPT", "Claude", "Gemini", "自定义OpenAI", "ModelScope", "Ollama", "SiliconFlow"], # 保持模型列表一致
+            # default_model="GPT", # 不再需要传递默认模型
+            outline_info=outline_info,
+            context_info=context_info,
+            prompt_manager=self.main_window.prompt_manager,
+            # 传递新参数
+            task_type="polish",
+            selected_text=selected_text,
+            full_text=full_text,
+            target_word_count=target_word_count # 传递目标字数
+        )
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            polished_result = dialog.get_result()
+            if polished_result:
+                # 替换选定的文本
+                cursor.insertText(polished_result)
+                # 更新状态栏和保存按钮
+                self.save_button.setEnabled(True)
+                self.main_window.status_bar_manager.show_message("选定文本已润色")
+                # 可以选择自动保存
+                # self.save_chapter(show_message=False)
+
